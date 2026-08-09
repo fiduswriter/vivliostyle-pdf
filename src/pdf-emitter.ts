@@ -32,17 +32,59 @@ import type {PDFPage, RGB} from "@pdfme/pdf-lib"
 
 const PX_TO_PT = 0.75
 
-/** The four Libertinus Serif variants shipped in public/fonts/ (OFL licensed). */
-const FONT_FILES = {
-    regular: "fonts/LibertinusSerif-Regular.ttf",
-    bold: "fonts/LibertinusSerif-Bold.ttf",
-    italic: "fonts/LibertinusSerif-Italic.ttf",
-    boldItalic: "fonts/LibertinusSerif-BoldItalic.ttf",
-    // Libertinus Mono has no bold/italic cuts; all monospace text maps here.
-    mono: "fonts/LibertinusMono-Regular.ttf"
-} as const
+/** A font family with up to four style/weight cuts. */
+interface FontFamilyConfig {
+    /** Substring matched against the computed font-family. */
+    familyMatch: RegExp
+    /** Fallback order if a requested cut is missing. */
+    fallbackOrder: FontCut[]
+    regular: string
+    bold?: string
+    italic?: string
+    boldItalic?: string
+}
 
-type FontVariant = keyof typeof FONT_FILES
+type FontCut = "regular" | "bold" | "italic" | "boldItalic"
+
+/** Font registry: drop TTFs into public/fonts/ and add a family here. */
+const FONT_FAMILIES: FontFamilyConfig[] = [
+    {
+        familyMatch: /mono/i,
+        fallbackOrder: ["regular"],
+        regular: "fonts/LibertinusMono-Regular.ttf"
+    },
+    {
+        familyMatch: /libertinus serif|serif/i,
+        fallbackOrder: ["regular", "italic", "bold", "boldItalic"],
+        regular: "fonts/LibertinusSerif-Regular.ttf",
+        bold: "fonts/LibertinusSerif-Bold.ttf",
+        italic: "fonts/LibertinusSerif-Italic.ttf",
+        boldItalic: "fonts/LibertinusSerif-BoldItalic.ttf"
+    }
+]
+
+/** Flattened map of all physical font files that need to be loaded. */
+const FONT_FILES: Record<string, string> = (() => {
+    const files: Record<string, string> = {}
+    for (const family of FONT_FAMILIES) {
+        const name = familyName(family)
+        for (const cut of family.fallbackOrder) {
+            const path = family[cut]
+            if (path) {
+                files[`${name}-${cut}`] = path
+            }
+        }
+    }
+    return files
+})()
+
+function familyName(family: FontFamilyConfig): string {
+    // Derive an internal key from the regex source (first capturing-like token).
+    const raw = family.familyMatch.source.replace(/[\\/\[\](){}|?*+^$]/g, "")
+    return raw || "family"
+}
+
+type FontVariant = string
 
 interface FontMetrics {
     /** ascent and descent in px for a given font size (from fontkit, em-scaled) */
@@ -55,6 +97,12 @@ interface LoadedFont {
     metrics: FontMetrics
 }
 
+interface FontRun {
+    /** Indices into FONT_FAMILIES and the selected weight/style cut. */
+    familyIndex: number
+    cut: FontCut
+}
+
 interface WordRun {
     text: string
     /** rect relative to the page container, in px */
@@ -63,10 +111,12 @@ interface WordRun {
     yBottom: number
     width: number
     fontSizePx: number
-    variant: FontVariant
+    variant: FontRun
     color: RGB
     /** draw a strike line through this run (text-decoration: line-through) */
     lineThrough: boolean
+    /** draw an underline below this run (text-decoration: underline) */
+    underline: boolean
     /** synthesize small caps: lowercase drawn as uppercase at reduced size */
     smallCaps: boolean
 }
@@ -193,40 +243,83 @@ function isEmptyPage(container: HTMLElement): boolean {
     return text.trim().length === 0
 }
 
-/** Fetch the four TTF files, embed them (subset) and expose fontkit metrics. */
+interface LoadedCut extends LoadedFont {
+    cut: FontCut
+}
+
+interface LoadedFamily {
+    family: FontFamilyConfig
+    cuts: Map<FontCut, LoadedCut>
+}
+
+/** Fetch the configured TTF files, embed them (subset) and expose fontkit metrics. */
 async function loadFonts(
     pdfDoc: PDFDocument
-): Promise<Record<FontVariant, LoadedFont>> {
+): Promise<Record<FontVariant, LoadedFamily>> {
     const base = new URL(import.meta.env.BASE_URL, window.location.href)
-    const entries = await Promise.all(
-        (
-            Object.entries(FONT_FILES) as [FontVariant, string][]
-        ).map(async ([variant, path]) => {
+    const pdfFonts = new Map<string, PDFFont>()
+    const metricsByPath = new Map<string, FontMetrics>()
+
+    // Load each physical file once.
+    await Promise.all(
+        Object.entries(FONT_FILES).map(async ([_key, path]) => {
             const res = await fetch(new URL(path, base))
             if (!res.ok) {
                 throw new Error(`Failed to fetch font ${path}: ${res.status}`)
             }
             const bytes = new Uint8Array(await res.arrayBuffer())
-            const pdfFont = await pdfDoc.embedFont(bytes, {subset: true})
-            // fontkit gives us real ascent/descent for baseline placement.
+            pdfFonts.set(path, await pdfDoc.embedFont(bytes, {subset: true}))
             const fkFont = fontkit.create(bytes)
             const unitsPerEm = fkFont.unitsPerEm
-            const metrics: FontMetrics = {
+            metricsByPath.set(path, {
                 ascent: sizePx => (fkFont.ascent / unitsPerEm) * sizePx,
                 descent: sizePx =>
                     (Math.abs(fkFont.descent) / unitsPerEm) * sizePx
-            }
-            return [variant, {pdfFont, metrics}] as const
+            })
         })
     )
-    return Object.fromEntries(entries) as Record<FontVariant, LoadedFont>
+
+    // Build per-family lookup tables.
+    const families: Record<string, LoadedFamily> = {}
+    for (const family of FONT_FAMILIES) {
+        const name = familyName(family)
+        const cuts = new Map<FontCut, LoadedCut>()
+        for (const cut of family.fallbackOrder) {
+            const path = family[cut]
+            if (!path) continue
+            const pdfFont = pdfFonts.get(path)
+            const metrics = metricsByPath.get(path)
+            if (pdfFont && metrics) {
+                cuts.set(cut, {pdfFont, metrics, cut})
+            }
+        }
+        families[name] = {family, cuts}
+    }
+    return families
+}
+
+function resolveFont(
+    family: LoadedFamily,
+    requestedCut: FontCut
+): LoadedFont {
+    const cut =
+        family.cuts.get(requestedCut) ??
+        family.family.fallbackOrder
+            .map(c => family.cuts.get(c))
+            .find(Boolean)
+    if (!cut) {
+        throw new Error(
+            `Font family has no usable cut: ${family.family.familyMatch.source}`
+        )
+    }
+    return {pdfFont: cut.pdfFont, metrics: cut.metrics}
 }
 
 async function emitPage(
     win: Window,
     pdfDoc: PDFDocument,
     container: HTMLElement,
-    fonts: Record<FontVariant, LoadedFont>
+    fonts: Record<string, LoadedFamily>
 ): Promise<{pageHeightPt: number}> {
     const containerRect = container.getBoundingClientRect()
     const pageWidthPt = containerRect.width * PX_TO_PT
@@ -251,11 +344,11 @@ async function emitPage(
     paintBorders(win, container, containerRect, page, toPdf)
     await paintImages(win, pdfDoc, container, containerRect, page, toPdf)
 
-    const words = collectWords(win, container, containerRect)
+    const words = collectWords(win, container, containerRect, fonts)
     // ::marker pseudo-boxes have no text nodes; synthesize them separately.
     words.push(...collectListMarkers(win, container, containerRect, fonts))
     for (const word of words) {
-        const font = fonts[word.variant]
+        const font = resolveFont(fonts[familyName(FONT_FAMILIES[word.variant.familyIndex])], word.variant.cut)
         const sizePt = word.fontSizePx * PX_TO_PT
         // Baseline approximation: the range rect roughly spans ascent..descent
         // of the text, so the baseline sits `descent` above the rect bottom.
@@ -291,6 +384,17 @@ async function emitPage(
                 start: {x: xPt, y: strikeY},
                 end: {x: xPt + word.width * PX_TO_PT, y: strikeY},
                 thickness: Math.max(0.4, sizePt / 18),
+                color: word.color
+            })
+        }
+        if (word.underline) {
+            // Underline just below the baseline, matching common UA style.
+            const underlineOffset = Math.max(0.5, sizePt * 0.09)
+            const underlineY = baselineY - underlineOffset
+            page.drawLine({
+                start: {x: xPt, y: underlineY},
+                end: {x: xPt + word.width * PX_TO_PT, y: underlineY},
+                thickness: Math.max(0.4, sizePt / 16),
                 color: word.color
             })
         }
@@ -421,12 +525,15 @@ function addLinkAnnotations(
                 rect.y + rect.height
             ]
             let annot
+            const LINK_COLOR = rgb(0.141, 0.337, 0.651) // #2456a6
             if (isExternal) {
                 annot = pdfDoc.context.obj({
                     Type: "Annot",
                     Subtype: "Link",
                     Rect: rectArray,
-                    Border: [0, 0, 0],
+                    Border: [0, 0, 0.5],
+                    C: [LINK_COLOR.red, LINK_COLOR.green, LINK_COLOR.blue],
+                    H: "I",
                     A: {
                         Type: "Action",
                         S: "URI",
@@ -439,7 +546,9 @@ function addLinkAnnotations(
                     Type: "Annot",
                     Subtype: "Link",
                     Rect: rectArray,
-                    Border: [0, 0, 0],
+                    Border: [0, 0, 0.5],
+                    C: [LINK_COLOR.red, LINK_COLOR.green, LINK_COLOR.blue],
+                    H: "I",
                     Dest: [
                         pages[target.pageIndex].ref,
                         "XYZ",
@@ -887,7 +996,8 @@ function rasterizeToPng(
 function collectWords(
     win: Window,
     container: HTMLElement,
-    containerRect: DOMRect
+    containerRect: DOMRect,
+    _fonts: Record<string, LoadedFamily>
 ): WordRun[] {
     const words: WordRun[] = []
     const doc = win.document
@@ -911,26 +1021,28 @@ function collectWords(
         }
         const color = parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0)
         const fontSizePx = parseFloat(style.fontSize)
+        const transform = style.textTransform
         const variant = pickVariant(
             style.fontWeight,
             style.fontStyle,
             style.fontFamily
         )
-        const transform = style.textTransform
-        const lineThrough = hasLineThrough(win, container, parent)
+        const decorations = getTextDecorations(win, container, parent)
         const smallCaps = style.fontVariantCaps.includes("small-caps")
         const text = textNode.data
 
         const applyTransform = (s: string): string => {
-            // (capitalize not handled — prototype limitation.)
-            if (transform === "uppercase") {
-                return s.toUpperCase()
-            }
-            if (transform === "lowercase") {
-                return s.toLowerCase()
-            }
-            return s
-        }
+    if (transform === "uppercase") {
+        return s.toUpperCase()
+    }
+    if (transform === "lowercase") {
+        return s.toLowerCase()
+    }
+    if (transform === "capitalize") {
+        return s.replace(/\b\w/g, c => c.toUpperCase())
+    }
+    return s
+}
         const pushRun = (runText: string, rect: DOMRect): void => {
             words.push({
                 text: applyTransform(runText),
@@ -941,7 +1053,8 @@ function collectWords(
                 fontSizePx,
                 variant,
                 color,
-                lineThrough,
+                lineThrough: decorations.lineThrough,
+                underline: decorations.underline,
                 smallCaps
             })
         }
@@ -1012,7 +1125,7 @@ function collectListMarkers(
     win: Window,
     container: HTMLElement,
     containerRect: DOMRect,
-    fonts: Record<FontVariant, LoadedFont>
+    fonts: Record<string, LoadedFamily>
 ): WordRun[] {
     const runs: WordRun[] = []
     for (const el of walkElements(win, container)) {
@@ -1036,35 +1149,11 @@ function collectListMarkers(
             return n
         }
         const listStyle = style.listStyleType
-        let marker: string | null = null
-        if (el.style.listStyleType === "none") {
-            // Vivliostyle overrides list-style-type with an inline "none"
-            // and renders markers internally (invisible to a DOM walk).
-            // Synthesize them from the list element type. An author-specified
-            // "none" lives in a stylesheet and is NOT matched here.
-            const parentTag = el.parentElement?.tagName
-            if (parentTag === "OL") {
-                marker = `${ordinal()}.`
-            } else if (parentTag === "UL") {
-                // Bullet type by nesting depth (UA default disc/circle/square
-                // sequence); U+25AA is not in Libertinus Serif, hence "•".
-                let depth = 0
-                let ancestor = el.parentElement?.parentElement
-                while (ancestor) {
-                    if (ancestor.tagName === "UL") {
-                        depth++
-                    }
-                    ancestor = ancestor.parentElement
-                }
-                marker = depth % 2 === 0 ? "•" : "◦"
-            }
-        } else if (listStyle === "decimal") {
-            marker = `${ordinal()}.`
-        } else if (listStyle === "disc" || listStyle === "square") {
-            marker = "•"
-        } else if (listStyle === "circle") {
-            marker = "◦"
-        }
+        const marker = markerForListStyle(
+            listStyle,
+            () => ordinal(),
+            () => bulletDepth(el)
+        )
         if (!marker) {
             continue
         }
@@ -1078,7 +1167,10 @@ function collectListMarkers(
             style.fontStyle,
             style.fontFamily
         )
-        const font = fonts[variant].pdfFont
+        const font = resolveFont(
+            fonts[familyName(FONT_FAMILIES[variant.familyIndex])],
+            variant.cut
+        ).pdfFont
         // Right-align the marker ending 0.4em left of the item's box.
         const markerWidthPx =
             (font.widthOfTextAtSize(marker, fontSizePx * PX_TO_PT) /
@@ -1100,6 +1192,7 @@ function collectListMarkers(
             variant,
             color: parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0),
             lineThrough: false,
+            underline: false,
             smallCaps: false
         })
     }
@@ -1113,58 +1206,150 @@ function collectListMarkers(
  * the element they are declared on — so walk up. Results are cached per
  * ancestor element.
  */
-const lineThroughCache = new WeakMap<HTMLElement, boolean>()
+interface TextDecorations {
+    lineThrough: boolean
+    underline: boolean
+}
 
-function hasLineThrough(
+const decorationCache = new WeakMap<HTMLElement, TextDecorations>()
+
+function getTextDecorations(
     win: Window,
     container: HTMLElement,
     el: HTMLElement
-): boolean {
-    const cached = lineThroughCache.get(el)
+): TextDecorations {
+    const cached = decorationCache.get(el)
     if (cached !== undefined) {
         return cached
     }
-    let result = false
+    const result: TextDecorations = {lineThrough: false, underline: false}
     let node: HTMLElement | null = el
     while (node && node !== container) {
-        if (
-            win
-                .getComputedStyle(node)
-                .textDecorationLine.includes("line-through")
-        ) {
-            result = true
+        const line = win.getComputedStyle(node).textDecorationLine
+        if (line.includes("line-through")) {
+            result.lineThrough = true
+        }
+        if (line.includes("underline")) {
+            result.underline = true
+        }
+        if (result.lineThrough && result.underline) {
             break
         }
         node = node.parentElement
     }
-    lineThroughCache.set(el, result)
+    decorationCache.set(el, result)
     return result
+}
+
+function bulletDepth(el: Element): number {
+    let depth = 0
+    let ancestor = el.parentElement?.parentElement
+    while (ancestor) {
+        if (ancestor.tagName === "UL") {
+            depth++
+        }
+        ancestor = ancestor.parentElement
+    }
+    return depth
+}
+
+const ROMAN_ONES = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix"]
+const ROMAN_TENS = ["", "x", "xx", "xxx", "xl", "l", "lx", "lxx", "lxxx", "xc"]
+const ROMAN_HUNDREDS = ["", "c", "cc", "ccc", "cd", "d", "dc", "dcc", "dccc", "cm"]
+
+function toRoman(n: number): string {
+    if (n <= 0 || n > 1999) return String(n)
+    return (
+        ROMAN_HUNDREDS[Math.floor(n / 100)] +
+        ROMAN_TENS[Math.floor((n % 100) / 10)] +
+        ROMAN_ONES[n % 10]
+    )
+}
+
+function toAlphaOrdinal(n: number, upper: boolean): string {
+    const letter = String.fromCharCode(0x61 + ((n - 1) % 26))
+    const repeats = Math.floor((n - 1) / 26) + 1
+    return upper ? letter.toUpperCase().repeat(repeats) : letter.repeat(repeats)
+}
+
+function markerForListStyle(
+    listStyle: string,
+    ordinal: () => number,
+    bulletDepth: () => number
+): string | null {
+    // Vivliostyle overrides list-style-type with an inline "none" and renders
+    // markers internally (invisible to a DOM walk). Synthesize from the list
+    // element type. An author-specified "none" in a stylesheet is NOT matched.
+    if (listStyle === "none" || listStyle === "") {
+        return null
+    }
+
+    // Ordered list styles.
+    switch (listStyle) {
+        case "decimal":
+        case "decimal-leading-zero":
+            return `${ordinal()}.`
+        case "lower-roman":
+            return `${toRoman(ordinal())}.`
+        case "upper-roman":
+            return `${toRoman(ordinal()).toUpperCase()}.`
+        case "lower-alpha":
+        case "lower-latin":
+            return `${toAlphaOrdinal(ordinal(), false)}.`
+        case "upper-alpha":
+        case "upper-latin":
+            return `${toAlphaOrdinal(ordinal(), true)}.`
+    }
+
+    // Unordered list styles.
+    switch (listStyle) {
+        case "disc":
+        case "square":
+            return "•"
+        case "circle":
+            return "◦"
+        case "disclosure-open":
+            return "▾"
+        case "disclosure-closed":
+            return "▸"
+    }
+
+    // Default UA bullet sequence by nesting depth.
+    if (listStyle === "list-item" || listStyle === "initial") {
+        return bulletDepth() % 2 === 0 ? "•" : "◦"
+    }
+
+    return null
 }
 
 function pickVariant(
     fontWeight: string,
     fontStyle: string,
     fontFamily: string
-): FontVariant {
-    // Monospace maps to Libertinus Mono, which has no bold/italic cuts.
-    // Vivliostyle rewrites families (e.g. `Fnt_2, "Libertinus Mono",
-    // monospace`) but the original names survive in the computed value.
-    if (/mono/i.test(fontFamily)) {
-        return "mono"
-    }
+): FontRun {
     const weight = parseInt(fontWeight, 10)
     const bold = Number.isNaN(weight) ? fontWeight === "bold" : weight >= 600
     const italic = fontStyle === "italic" || fontStyle === "oblique"
+
+    let cut: FontCut
     if (bold && italic) {
-        return "boldItalic"
+        cut = "boldItalic"
+    } else if (bold) {
+        cut = "bold"
+    } else if (italic) {
+        cut = "italic"
+    } else {
+        cut = "regular"
     }
-    if (bold) {
-        return "bold"
+
+    // Pick the first configured family whose regex matches the computed family.
+    for (let i = 0; i < FONT_FAMILIES.length; i++) {
+        if (FONT_FAMILIES[i].familyMatch.test(fontFamily)) {
+            return {familyIndex: i, cut}
+        }
     }
-    if (italic) {
-        return "italic"
-    }
-    return "regular"
+    // Fallback to the last configured family (typically the serif default).
+    return {familyIndex: FONT_FAMILIES.length - 1, cut}
 }
 
 interface ParsedColor {

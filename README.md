@@ -56,7 +56,8 @@ src/main.ts                 wiring: paginate → emit → download
 src/pdf-emitter.ts          the DOM→PDF emitter (public API:
                             emitPdfFromVivliostyleWindow(win))
 src/demo-document.html      rich test document (paged CSS, TOC, footnotes,
-                            3 tables, 3 figures, bibliography)
+                            cross references, external links, 3 tables,
+                            3 figures, bibliography)
 src/vivliostyle-print.d.ts  types for the untyped @vivliostyle/print
 public/fonts/               Libertinus Serif TTFs (OFL, see OFL.txt)
 public/images/              figure SVGs + generated PNG
@@ -65,6 +66,34 @@ scripts/debug-run.mjs       dev helper: run generation, log console, save PDF
 test/e2e.spec.ts            Playwright end-to-end test
 .github/workflows/pages.yml GitHub Pages deployment
 ```
+
+## Demo document coverage
+
+The demo document (`src/demo-document.html`) deliberately exercises:
+
+- running page headers (`string-set` + `@top-center`) and page-number
+  footers (`@bottom-center` + `counter(page)`/`counter(pages)`),
+- footnotes (`float: footnote`, `::footnote-call`, `::footnote-marker`),
+- a table of contents with `target-counter(attr(href url), page)` and
+  leader dots,
+- **cross references** in the body text ("Table 2 (page N)", "Section 2
+  (page N)", "Figure 1 (page N)") — forward and backward, pointing at a
+  heading, a table, and figures — using the same `target-counter` mechanism
+  as the TOC,
+- **external hyperlinks** (vivliostyle.org, pdf-lib.js.org), styled as
+  links. In the generated PDF they appear as styled (blue) text but are
+  **not clickable** — see Limitations,
+- three tables (simple, styled with header background/borders, and one
+  spanning a page break) and three figures (two SVG, one PNG),
+- headings with CSS-counter numbering, nested lists, a blockquote, inline
+  code and a dark `<pre>` block, and a bibliography.
+
+The e2e test (`test/e2e.spec.ts`) verifies these features in the generated
+PDF by extracting per-page text with `pdfjs-dist` (pdf-lib cannot extract
+text): it checks the running header and page-number footer on every page,
+resolved TOC page numbers, cross-reference numbers against the actual pages
+of their targets, footnote bodies on the same page as their calls, link
+text presence, and that the PDF contains zero annotations.
 
 ## Develop
 
@@ -102,8 +131,13 @@ to "GitHub Actions".
 - **Single font family**: every font-family maps to Libertinus Serif.
   Monospace content (`<code>`, `<pre>`) is *positioned* exactly (measured
   rects) but *drawn* in a proportional serif, so spacing looks uneven.
-- **No links/annotations**: pdf-lib cannot create annotations. There is a
-  `TODO(links)` in `src/pdf-emitter.ts`.
+- **Links are not clickable in the output PDF** (pdf-lib has no annotation
+  support). Hyperlinks and cross references render as styled text only —
+  cross-reference page numbers *are* resolved correctly, but nothing is
+  clickable. There is a `TODO(links)` in `src/pdf-emitter.ts`, and the e2e
+  test asserts the output contains zero annotations.
+- **Text decorations are not painted**: underline, line-through etc. are
+  dropped, so links appear as colored but non-underlined text.
 - **Partial painting**: backgrounds and borders are drawn in document
   order — a simplification of the CSS stacking model. Only solid borders
   and solid background colors are painted; no border-radius, shadows,

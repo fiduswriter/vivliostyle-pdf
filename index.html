@@ -70,9 +70,9 @@
             </li>
             <li>
                 A custom DOM→PDF emitter walks the paginated output (measured
-                text positions, fonts, images, backgrounds, borders) and
-                re-renders it with
-                <a href="https://pdf-lib.js.org/">pdf-lib</a>.
+                text positions, fonts, images, backgrounds, borders, link
+                rects) and re-renders it with
+                <a href="https://github.com/pdfme/pdf-lib">@pdfme/pdf-lib</a>.
             </li>
             <li>The resulting PDF bytes are downloaded as a file.</li>
         </ol>
@@ -87,8 +87,9 @@
             tables (one spanning a page break), SVG and PNG figures,
             inline styles (bold, italic, bold-italic, strikethrough, small
             caps, monospace code), and hyperlinks. In the generated PDF,
-            links render as styled text but are not clickable (pdf-lib
-            cannot emit annotations).
+            links are clickable annotations: external links open their
+            URL, and TOC entries / cross references jump to the target
+            page.
         </p>
         <p>
             <button id="generate" type="button">Generate PDF</button>

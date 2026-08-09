@@ -1,35 +1,77 @@
 import {expect, test} from "@playwright/test"
 import {readFile} from "node:fs/promises"
-import {PDFDocument} from "pdf-lib"
+import {PDFDocument} from "@pdfme/pdf-lib"
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs"
 
-/** Extract per-page plain text with pdfjs-dist (pdf-lib cannot read text). */
-async function extractPageTexts(bytes: Uint8Array): Promise<string[]> {
+interface PdfjsAnnotation {
+    subtype?: string
+    url?: string
+    dest?: unknown
+}
+
+type PdfjsDoc = Awaited<ReturnType<typeof pdfjs.getDocument>["promise"]>
+
+/** Resolve a GoTo destination to a 0-based page index (null if unknown). */
+async function resolveDestPageIndex(
+    doc: PdfjsDoc,
+    dest: unknown
+): Promise<number | null> {
+    if (Array.isArray(dest) && dest.length > 0) {
+        const ref = dest[0] as {num: number; gen: number}
+        try {
+            return await doc.getPageIndex(ref)
+        } catch {
+            return null
+        }
+    }
+    if (typeof dest === "string") {
+        const explicit = await doc.getDestination(dest)
+        return explicit ? resolveDestPageIndex(doc, explicit) : null
+    }
+    return null
+}
+
+interface PdfInspection {
+    /** plain text per page (1-based order) */
+    pageTexts: string[]
+    /** URLs of external (URI action) Link annotations */
+    urls: string[]
+    /** per page: resolved 0-based target page of each GoTo Link (null for
+        URI links or unresolvable dests) */
+    destPagesPerPage: (number | null)[][]
+}
+
+/** Extract text + link annotations with pdfjs-dist (@pdfme/pdf-lib, like
+    pdf-lib, cannot read text or annotations). */
+async function inspectPdf(bytes: Uint8Array): Promise<PdfInspection> {
     // pdfjs v6 rejects node Buffers; copy into a plain Uint8Array.
     const doc = await pdfjs.getDocument({data: new Uint8Array(bytes)}).promise
-    const texts: string[] = []
+    const pageTexts: string[] = []
+    const urls: string[] = []
+    const destPagesPerPage: (number | null)[][] = []
     for (let i = 1; i <= doc.numPages; i++) {
         const page = await doc.getPage(i)
         const content = await page.getTextContent()
-        const text = content.items
-            .map(item => ("str" in item ? item.str : ""))
-            .join(" ")
-            .replace(/\s+/g, " ")
-        texts.push(text)
+        pageTexts.push(
+            content.items
+                .map(item => ("str" in item ? item.str : ""))
+                .join(" ")
+                .replace(/\s+/g, " ")
+        )
+        const annots = (await page.getAnnotations()) as PdfjsAnnotation[]
+        const destPages: (number | null)[] = []
+        for (const annot of annots) {
+            if (annot.subtype !== "Link") {
+                continue
+            }
+            if (annot.url) {
+                urls.push(annot.url)
+            }
+            destPages.push(await resolveDestPageIndex(doc, annot.dest))
+        }
+        destPagesPerPage.push(destPages)
     }
-    return texts
-}
-
-/** Total number of annotations across all pages (expected: zero). */
-async function countAnnotations(bytes: Uint8Array): Promise<number> {
-    const doc = await pdfjs.getDocument({data: new Uint8Array(bytes)})
-        .promise
-    let count = 0
-    for (let i = 1; i <= doc.numPages; i++) {
-        const page = await doc.getPage(i)
-        count += (await page.getAnnotations()).length
-    }
-    return count
+    return {pageTexts, urls, destPagesPerPage}
 }
 
 /** 1-based index of the first page whose text contains `needle`. */
@@ -79,7 +121,7 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
     expect(consoleErrors).toEqual([])
 
     // ---- Feature-level assertions on the extracted text ----
-    const pages = await extractPageTexts(bytes)
+    const {pageTexts: pages, urls, destPagesPerPage} = await inspectPdf(bytes)
     const pageCount = pages.length
 
     // 1. Running header on every page. (Only the margin header contains
@@ -173,13 +215,58 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
         ).toContain(body)
     }
 
-    // 6. Links render as (styled) text…
+    // 6. Links: text is present AND clickable annotations exist.
     const allText = pages.join(" ")
     expect(allText).toContain("vivliostyle pagination engine")
     expect(allText).toContain("using pdf-lib")
-    // …but the PDF contains no annotations at all: links are not clickable
-    // (pdf-lib has no annotation support — documented limitation).
-    expect(await countAnnotations(bytes)).toBe(0)
+
+    // 6a. External links → URI action annotations for both demo URLs.
+    expect(urls).toContain("https://vivliostyle.org/")
+    expect(urls).toContain("https://pdf-lib.js.org/")
+
+    // 6b. Internal links → GoTo annotations. The TOC has 7 entries and
+    //     there are 6 cross-reference anchors; each anchor may produce
+    //     several rects, so the floor is conservative.
+    const goToCount = destPagesPerPage
+        .flat()
+        .filter(p => p !== null).length
+    expect(goToCount).toBeGreaterThanOrEqual(10)
+
+    // 6c. TOC link annotations jump to the pages where the sections
+    //     actually are.
+    const tocDests = new Set(
+        destPagesPerPage[pageContaining(pages, "Contents") - 1]
+    )
+    for (const heading of [
+        "The Pagination Pipeline",
+        "Tabular Results",
+        "References"
+    ]) {
+        const targetPage = pageContaining(pages, heading, 2)
+        expect(
+            tocDests.has(targetPage - 1),
+            `TOC link to "${heading}" lands on page ${targetPage}`
+        ).toBe(true)
+    }
+
+    // 6d. Cross-reference link annotations jump to their caption pages.
+    const xrefDests = new Set(
+        destPagesPerPage[
+            pageContaining(pages, "A feature matrix is provided in") - 1
+        ]
+    )
+    expect(
+        xrefDests.has(
+            pageContaining(pages, "Table 2: CSS Paged Media features") - 1
+        ),
+        "Table 2 cross reference links to the caption's page"
+    ).toBe(true)
+    expect(
+        xrefDests.has(
+            pageContaining(pages, "Figure 1: The four-stage pagination") - 1
+        ),
+        "Figure 1 cross reference links to the caption's page"
+    ).toBe(true)
 
     // 7. Inline styles. pdfjs inserts erratic spaces around the glyph-size
     //    changes of synthesized small caps, so compare space-collapsed text.

@@ -2,13 +2,15 @@
  * DOM-to-PDF emitter.
  *
  * Walks the paginated output produced by vivliostyle inside its (hidden)
- * iframe and re-renders it as a real vector PDF using pdf-lib. No browser
- * print dialog is involved.
+ * iframe and re-renders it as a real vector PDF using @pdfme/pdf-lib (an
+ * API-compatible, maintained fork of pdf-lib). No browser print dialog is
+ * involved.
  *
- * Scope of this prototype: text (word-precise positions), embedded Libertinus
- * Serif with subsetting, PNG/JPEG images, SVG images (rasterized), solid
- * background-color rects and simple solid borders. Links/annotations are not
- * emitted (pdf-lib has no annotation support) — see the TODO below.
+ * Scope of this prototype: text (word-precise positions), embedded
+ * Libertinus Serif/Mono with subsetting, PNG/JPEG images, SVG images
+ * (rasterized), solid background-color rects and simple solid borders, and
+ * link annotations (external URI actions, internal GoTo destinations)
+ * hand-built via the low-level PDF object API.
  *
  * Coordinate systems:
  *  - Browser DOM: origin top-left, units CSS px.
@@ -16,9 +18,9 @@
  *  All measured rects are made relative to their page container first, then
  *  Y is flipped when drawing.
  */
-import fontkit from "@pdf-lib/fontkit"
-import {PDFDocument, PDFFont, rgb} from "pdf-lib"
-import type {RGB} from "pdf-lib"
+import * as fontkit from "fontkit"
+import {PDFDocument, PDFFont, PDFString, rgb} from "@pdfme/pdf-lib"
+import type {PDFPage, RGB} from "@pdfme/pdf-lib"
 
 const PX_TO_PT = 0.75
 
@@ -100,15 +102,33 @@ export async function emitPdfFromVivliostyleWindow(
     void doc.body.offsetWidth
 
     const pdfDoc = await PDFDocument.create()
-    pdfDoc.registerFontkit(fontkit)
+    // The fork's Fontkit interface is not re-exported from its index.
+    pdfDoc.registerFontkit(
+        fontkit as unknown as Parameters<PDFDocument["registerFontkit"]>[0]
+    )
 
     onProgress?.("Loading fonts…")
     const fonts = await loadFonts(pdfDoc)
 
+    // Link collection runs alongside page emission. Internal (#id) links
+    // need their target's page, which may come later — so anchor targets
+    // are recorded per page and the annotations are attached afterwards.
+    const links: CollectedLink[] = []
+    const anchorTargets = new Map<string, AnchorTarget>()
+
     for (const [index, container] of pageContainers.entries()) {
         onProgress?.(`Emitting page ${index + 1} of ${pageContainers.length}…`)
-        await emitPage(win, pdfDoc, container, fonts)
+        const {pageHeightPt} = await emitPage(win, pdfDoc, container, fonts)
+        collectAnchorTargets(
+            win,
+            container,
+            pageHeightPt,
+            index,
+            anchorTargets
+        )
+        collectLinks(win, container, pageHeightPt, index, links)
     }
+    addLinkAnnotations(pdfDoc, links, anchorTargets)
 
     onProgress?.("Serializing PDF…")
     return pdfDoc.save()
@@ -157,7 +177,7 @@ async function emitPage(
     pdfDoc: PDFDocument,
     container: HTMLElement,
     fonts: Record<FontVariant, LoadedFont>
-): Promise<void> {
+): Promise<{pageHeightPt: number}> {
     const containerRect = container.getBoundingClientRect()
     const pageWidthPt = containerRect.width * PX_TO_PT
     const pageHeightPt = containerRect.height * PX_TO_PT
@@ -225,6 +245,166 @@ async function emitPage(
             })
         }
     }
+    return {pageHeightPt}
+}
+
+/* ---- Link annotations ----------------------------------------------
+ * pdf-lib/@pdfme/pdf-lib has no high-level annotation API, so link
+ * annotations are hand-built as PDF dictionaries via doc.context.obj(),
+ * registered with doc.context.register(), and attached to each page's
+ * leaf node with page.node.addAnnot().
+ * ------------------------------------------------------------------ */
+
+interface CollectedLink {
+    href: string
+    /** 0-based index into pdfDoc.getPages() */
+    pageIndex: number
+    /** rects in PDF coordinates (origin bottom-left, pt) */
+    rects: {x: number; y: number; width: number; height: number}[]
+}
+
+interface AnchorTarget {
+    pageIndex: number
+    /** top edge of the target element, in PDF pt from the page bottom */
+    yTopPt: number
+}
+
+/** Record where each element with an id landed (page + top coordinate). */
+function collectAnchorTargets(
+    win: Window,
+    container: HTMLElement,
+    pageHeightPt: number,
+    pageIndex: number,
+    targets: Map<string, AnchorTarget>
+): void {
+    const containerRect = container.getBoundingClientRect()
+    for (const el of Array.from(
+        container.querySelectorAll<HTMLElement>("[id]")
+    )) {
+        // vivliostyle adds shadow elements with rewritten "viv-id-…" ids;
+        // the original ids are what links should resolve to.
+        if (el.id.startsWith("viv-id-")) {
+            continue
+        }
+        if (targets.has(el.id)) {
+            continue
+        }
+        const rect = el.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) {
+            continue
+        }
+        const yTopPx = rect.top - containerRect.top
+        targets.set(el.id, {
+            pageIndex,
+            yTopPt: pageHeightPt - yTopPx * PX_TO_PT
+        })
+    }
+    void win
+}
+
+/** Collect every <a href> rect; inline links can wrap → multiple rects. */
+function collectLinks(
+    win: Window,
+    container: HTMLElement,
+    pageHeightPt: number,
+    pageIndex: number,
+    links: CollectedLink[]
+): void {
+    const containerRect = container.getBoundingClientRect()
+    for (const anchor of Array.from(
+        container.querySelectorAll<HTMLAnchorElement>("a[href]")
+    )) {
+        const href = anchor.getAttribute("href") ?? ""
+        if (!href) {
+            continue
+        }
+        const rects = Array.from(anchor.getClientRects())
+            .filter(r => r.width > 0 && r.height > 0)
+            .map(r => ({
+                x: (r.left - containerRect.left) * PX_TO_PT,
+                y: pageHeightPt - (r.top - containerRect.top + r.height) * PX_TO_PT,
+                width: r.width * PX_TO_PT,
+                height: r.height * PX_TO_PT
+            }))
+        if (rects.length > 0) {
+            links.push({href, pageIndex, rects})
+        }
+    }
+    void win
+}
+
+/**
+ * Recover the original fragment id from an href. Vivliostyle rewrites
+ * internal "#id" hrefs to "#viv-id-<url-encoded document URL>:0023id"
+ * (":0023" is the encoded "#"); strip that prefix when present.
+ */
+function resolveFragmentId(href: string): string | null {
+    if (!href.startsWith("#")) {
+        return null
+    }
+    const raw = href.slice(1)
+    const marker = ":0023"
+    const idx = raw.lastIndexOf(marker)
+    return idx === -1 ? raw : raw.slice(idx + marker.length)
+}
+
+/**
+ * Attach link annotations after all pages are emitted (two-pass: internal
+ * GoTo destinations need the target's page, which may be emitted later).
+ */
+function addLinkAnnotations(
+    pdfDoc: PDFDocument,
+    links: CollectedLink[],
+    targets: Map<string, AnchorTarget>
+): void {
+    const pages = pdfDoc.getPages()
+    for (const link of links) {
+        const page = pages[link.pageIndex]
+        const isExternal = /^https?:\/\//.test(link.href)
+        const fragmentId = resolveFragmentId(link.href)
+        const target = fragmentId ? targets.get(fragmentId) : undefined
+        for (const rect of link.rects) {
+            const rectArray = [
+                rect.x,
+                rect.y,
+                rect.x + rect.width,
+                rect.y + rect.height
+            ]
+            let annot
+            if (isExternal) {
+                annot = pdfDoc.context.obj({
+                    Type: "Annot",
+                    Subtype: "Link",
+                    Rect: rectArray,
+                    Border: [0, 0, 0],
+                    A: {
+                        Type: "Action",
+                        S: "URI",
+                        URI: PDFString.of(link.href)
+                    }
+                })
+            } else if (target) {
+                // GoTo link: [pageRef /XYZ left top zoom]; null = keep.
+                annot = pdfDoc.context.obj({
+                    Type: "Annot",
+                    Subtype: "Link",
+                    Rect: rectArray,
+                    Border: [0, 0, 0],
+                    Dest: [
+                        pages[target.pageIndex].ref,
+                        "XYZ",
+                        null,
+                        target.yTopPt,
+                        null
+                    ]
+                })
+            } else {
+                continue // unresolvable target — skip
+            }
+            const annotRef = pdfDoc.context.register(annot)
+            page.node.addAnnot(annotRef)
+        }
+    }
 }
 
 /**
@@ -241,7 +421,7 @@ async function emitPage(
 const SMALL_CAPS_SCALE = 0.8
 
 function drawSmallCapsRun(
-    page: import("pdf-lib").PDFPage,
+    page: PDFPage,
     text: string,
     xPt: number,
     baselineY: number,
@@ -284,7 +464,7 @@ function paintBackgrounds(
     win: Window,
     container: HTMLElement,
     containerRect: DOMRect,
-    page: import("pdf-lib").PDFPage,
+    page: PDFPage,
     toPdf: ToPdfFn
 ): void {
     for (const el of walkElements(win, container)) {
@@ -313,7 +493,7 @@ function paintBorders(
     win: Window,
     container: HTMLElement,
     containerRect: DOMRect,
-    page: import("pdf-lib").PDFPage,
+    page: PDFPage,
     toPdf: ToPdfFn
 ): void {
     for (const el of walkElements(win, container)) {
@@ -391,7 +571,7 @@ async function paintImages(
     pdfDoc: PDFDocument,
     container: HTMLElement,
     containerRect: DOMRect,
-    page: import("pdf-lib").PDFPage,
+    page: PDFPage,
     toPdf: ToPdfFn
 ): Promise<void> {
     const images = Array.from(container.querySelectorAll("img"))
@@ -814,6 +994,3 @@ function* walkElements(win: Window, root: HTMLElement): Generator<HTMLElement> {
     }
 }
 
-// TODO(links): pdf-lib cannot create link annotations. When a solution is
-// available (or we switch PDF writers), walk <a href> elements here, take
-// their client rects, and emit URI link annotations with the same Y-flip.

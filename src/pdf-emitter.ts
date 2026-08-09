@@ -146,6 +146,8 @@ export interface PrintOptions {
     bleedBox?: boolean
     /** Bleed margin in millimetres (default 3). */
     bleedMm?: number
+    /** Draw a visible border around each Link annotation. */
+    linkAnnotationBorders?: boolean
 }
 
 /** Optional extras for emitPdfFromVivliostyleWindow. */
@@ -218,29 +220,47 @@ export async function emitPdfFromVivliostyleWindow(
         cropMarks: options?.printOptions?.cropMarks ?? false,
         trimBox: options?.printOptions?.trimBox ?? false,
         bleedBox: options?.printOptions?.bleedBox ?? false,
-        bleedMm: Math.max(0, options?.printOptions?.bleedMm ?? 3)
+        bleedMm: Math.max(0, options?.printOptions?.bleedMm ?? 3),
+        linkAnnotationBorders:
+            options?.printOptions?.linkAnnotationBorders ?? false
     }
 
+    const pageOffsets: {x: number; y: number}[] = []
     for (const [index, container] of pageContainers.entries()) {
         onProgress?.(`Emitting page ${index + 1} of ${pageContainers.length}…`)
-        const {pageHeightPt} = await emitPage(
+        const {pageHeightPt, originX, originY} = await emitPage(
             win,
             pdfDoc,
             container,
             fonts,
             printOptions
         )
+        pageOffsets.push({x: originX, y: originY})
         collectAnchorTargets(
             win,
             container,
             pageHeightPt,
             index,
-            anchorTargets
+            anchorTargets,
+            pageOffsets[index]
         )
-        collectLinks(win, container, pageHeightPt, index, links)
-        collectHeadings(container, pageHeightPt, index, headings)
+        collectLinks(
+            win,
+            container,
+            pageHeightPt,
+            index,
+            links,
+            pageOffsets[index]
+        )
+        collectHeadings(
+            container,
+            pageHeightPt,
+            index,
+            headings,
+            pageOffsets[index]
+        )
     }
-    addLinkAnnotations(pdfDoc, links, anchorTargets)
+    addLinkAnnotations(pdfDoc, links, anchorTargets, printOptions.linkAnnotationBorders)
 
     // Beyond-the-print-dialog extras: metadata, bookmarks, attachment.
     onProgress?.("Adding metadata, outline and attachment…")
@@ -354,7 +374,7 @@ async function emitPage(
     container: HTMLElement,
     fonts: Record<string, LoadedFamily>,
     printOptions: Required<PrintOptions>
-): Promise<{pageHeightPt: number}> {
+): Promise<{pageHeightPt: number; originX: number; originY: number}> {
     const containerRect = container.getBoundingClientRect()
     const pageWidthPt = containerRect.width * PX_TO_PT
     const pageHeightPt = containerRect.height * PX_TO_PT
@@ -481,7 +501,7 @@ async function emitPage(
         })
     }
 
-    return {pageHeightPt}
+    return {pageHeightPt, originX, originY}
 }
 
 interface Box {
@@ -588,7 +608,8 @@ function collectAnchorTargets(
     container: HTMLElement,
     pageHeightPt: number,
     pageIndex: number,
-    targets: Map<string, AnchorTarget>
+    targets: Map<string, AnchorTarget>,
+    pageOffset: {x: number; y: number}
 ): void {
     const containerRect = container.getBoundingClientRect()
     for (const el of Array.from(
@@ -609,7 +630,7 @@ function collectAnchorTargets(
         const yTopPx = rect.top - containerRect.top
         targets.set(el.id, {
             pageIndex,
-            yTopPt: pageHeightPt - yTopPx * PX_TO_PT
+            yTopPt: pageHeightPt - yTopPx * PX_TO_PT + pageOffset.y
         })
     }
     void win
@@ -621,7 +642,8 @@ function collectLinks(
     container: HTMLElement,
     pageHeightPt: number,
     pageIndex: number,
-    links: CollectedLink[]
+    links: CollectedLink[],
+    pageOffset: {x: number; y: number}
 ): void {
     const containerRect = container.getBoundingClientRect()
     for (const anchor of Array.from(
@@ -634,8 +656,11 @@ function collectLinks(
         const rects = Array.from(anchor.getClientRects())
             .filter(r => r.width > 0 && r.height > 0)
             .map(r => ({
-                x: (r.left - containerRect.left) * PX_TO_PT,
-                y: pageHeightPt - (r.top - containerRect.top + r.height) * PX_TO_PT,
+                x: (r.left - containerRect.left) * PX_TO_PT + pageOffset.x,
+                y:
+                    pageHeightPt -
+                    (r.top - containerRect.top + r.height) * PX_TO_PT +
+                    pageOffset.y,
                 width: r.width * PX_TO_PT,
                 height: r.height * PX_TO_PT
             }))
@@ -668,9 +693,11 @@ function resolveFragmentId(href: string): string | null {
 function addLinkAnnotations(
     pdfDoc: PDFDocument,
     links: CollectedLink[],
-    targets: Map<string, AnchorTarget>
+    targets: Map<string, AnchorTarget>,
+    showBorders: boolean
 ): void {
     const pages = pdfDoc.getPages()
+    const LINK_COLOR = rgb(0.141, 0.337, 0.651) // #2456a6
     for (const link of links) {
         const page = pages[link.pageIndex]
         const isExternal = /^https?:\/\//.test(link.href)
@@ -683,16 +710,20 @@ function addLinkAnnotations(
                 rect.x + rect.width,
                 rect.y + rect.height
             ]
+            const borderDict = showBorders
+                ? {
+                      Border: [0, 0, 0.5],
+                      C: [LINK_COLOR.red, LINK_COLOR.green, LINK_COLOR.blue],
+                      H: "I"
+                  }
+                : {Border: [0, 0, 0]}
             let annot
-            const LINK_COLOR = rgb(0.141, 0.337, 0.651) // #2456a6
             if (isExternal) {
                 annot = pdfDoc.context.obj({
                     Type: "Annot",
                     Subtype: "Link",
                     Rect: rectArray,
-                    Border: [0, 0, 0.5],
-                    C: [LINK_COLOR.red, LINK_COLOR.green, LINK_COLOR.blue],
-                    H: "I",
+                    ...borderDict,
                     A: {
                         Type: "Action",
                         S: "URI",
@@ -705,9 +736,7 @@ function addLinkAnnotations(
                     Type: "Annot",
                     Subtype: "Link",
                     Rect: rectArray,
-                    Border: [0, 0, 0.5],
-                    C: [LINK_COLOR.red, LINK_COLOR.green, LINK_COLOR.blue],
-                    H: "I",
+                    ...borderDict,
                     Dest: [
                         pages[target.pageIndex].ref,
                         "XYZ",
@@ -770,7 +799,8 @@ function collectHeadings(
     container: HTMLElement,
     pageHeightPt: number,
     pageIndex: number,
-    headings: CollectedHeading[]
+    headings: CollectedHeading[],
+    pageOffset: {x: number; y: number}
 ): void {
     const containerRect = container.getBoundingClientRect()
     for (const el of Array.from(
@@ -788,7 +818,10 @@ function collectHeadings(
             text,
             level: Number(el.tagName[1]),
             pageIndex,
-            yTopPt: pageHeightPt - (rect.top - containerRect.top) * PX_TO_PT
+            yTopPt:
+                pageHeightPt -
+                (rect.top - containerRect.top) * PX_TO_PT +
+                pageOffset.y
         })
     }
 }

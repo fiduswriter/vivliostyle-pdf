@@ -18,6 +18,8 @@ const trimBoxCheckbox = document.querySelector<HTMLInputElement>("#trim-box")!
 const bleedBoxCheckbox =
     document.querySelector<HTMLInputElement>("#bleed-box")!
 const bleedMmInput = document.querySelector<HTMLInputElement>("#bleed-mm")!
+const linkBordersCheckbox =
+    document.querySelector<HTMLInputElement>("#link-borders")!
 
 // Seed the editor with the demo source.
 sourceArea.value = demoHtml
@@ -64,7 +66,8 @@ function generate(): void {
         cropMarks: cropMarksCheckbox.checked,
         trimBox: trimBoxCheckbox.checked,
         bleedBox: bleedBoxCheckbox.checked,
-        bleedMm
+        bleedMm,
+        linkAnnotationBorders: linkBordersCheckbox.checked
     }
 
     printHTML(html, {

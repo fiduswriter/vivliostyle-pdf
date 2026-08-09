@@ -29,6 +29,10 @@
                 font-weight: bold;
                 font-style: italic;
             }
+            @font-face {
+                font-family: "Libertinus Mono";
+                src: url("__BASE__fonts/LibertinusMono-Regular.ttf");
+            }
 
             /* ---- Paged media setup ---- */
             @page {
@@ -130,13 +134,13 @@
                 padding-left: 8pt;
             }
             code {
-                font-family: monospace;
+                font-family: "Libertinus Mono", monospace;
                 font-size: 9.5pt;
                 background: #f0f0f0;
                 padding: 0 2pt;
             }
             pre {
-                font-family: monospace;
+                font-family: "Libertinus Mono", monospace;
                 font-size: 9pt;
                 line-height: 1.35;
                 background: #2d2d2d;
@@ -265,6 +269,11 @@
                 color: #555;
             }
 
+            /* ---- Inline style samples ---- */
+            .sc {
+                font-variant-caps: small-caps;
+            }
+
             /* ---- Links and cross references ---- */
             a {
                 color: #2456a6;
@@ -300,7 +309,8 @@
 
         <div class="abstract">
             <p>
-                <strong>Abstract.</strong> We demonstrate that print-quality
+                <strong class="sc">Abstract</strong>. We demonstrate that
+                print-quality
                 PDF documents can be produced entirely inside a web browser,
                 without invoking the browser's print dialog. A pagination
                 engine lays out HTML and CSS Paged Media in a hidden frame; a
@@ -402,6 +412,18 @@
                 is downloaded.
             </li>
         </ol>
+        <h3 class="sc">Inline styles</h3>
+        <p>
+            This paragraph exercises <strong>bold</strong>, <em>italic</em>,
+            <strong><em>bold-italic</em></strong>, <s>strikethrough</s>, and
+            <span class="sc">small caps</span> text in a single sentence, so
+            that every inline style can be checked on one line of the output.
+            Code spans such as <code>emitPdfFromVivliostyleWindow()</code> and
+            the listing below use a real monospace font, while
+            <strong><s>deleted emphasis</s></strong> shows that decorations
+            compose with weight. The section heading above and the abstract
+            label on the first page are set in small caps.
+        </p>
         <h3>Emitter sketch</h3>
         <p>
             The core loop of the emitter is deliberately simple:

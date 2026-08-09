@@ -23,10 +23,16 @@ DOM→PDF emitter (src/pdf-emitter.ts)
     (PNG/JPEG embedded directly, SVG rasterized via canvas at 2x)
   • positions every word individually from Range.getClientRects(), so
     browser line breaking/justification is preserved exactly
+  • draws strike lines for text-decoration: line-through, and synthesizes
+    small caps (Chromium applies font-variant-caps only at render time;
+    the DOM keeps lowercase text) fitted to the measured word width
   • synthesizes list markers (vivliostyle renders ::marker internally,
     invisible to a DOM walk)
-  • embeds Libertinus Serif (Regular/Bold/Italic/BoldItalic, subsetted)
-    via pdf-lib + @pdf-lib/fontkit
+  • embeds Libertinus Serif (Regular/Bold/Italic/BoldItalic) and
+    Libertinus Mono (subsetted) via pdf-lib + @pdf-lib/fontkit; monospace
+    is detected from the computed font-family (vivliostyle rewrites
+    families to e.g. `Fnt_2, "Libertinus Mono", monospace`, but the
+    original names survive)
         │
         ▼
 Uint8Array → Blob → download as demo.pdf
@@ -59,7 +65,7 @@ src/demo-document.html      rich test document (paged CSS, TOC, footnotes,
                             cross references, external links, 3 tables,
                             3 figures, bibliography)
 src/vivliostyle-print.d.ts  types for the untyped @vivliostyle/print
-public/fonts/               Libertinus Serif TTFs (OFL, see OFL.txt)
+public/fonts/               Libertinus Serif + Libertinus Mono TTFs (OFL)
 public/images/              figure SVGs + generated PNG
 scripts/gen-assets.mjs      dependency-free PNG generator (node zlib)
 scripts/debug-run.mjs       dev helper: run generation, log console, save PDF
@@ -85,6 +91,10 @@ The demo document (`src/demo-document.html`) deliberately exercises:
   **not clickable** — see Limitations,
 - three tables (simple, styled with header background/borders, and one
   spanning a page break) and three figures (two SVG, one PNG),
+- inline styles: bold, italic, bold-italic, strikethrough
+  (`text-decoration: line-through`, drawn as a vector line by the
+  emitter), small caps (synthesized by the emitter), and monospace code
+  spans plus a `<pre>` block set in Libertinus Mono,
 - headings with CSS-counter numbering, nested lists, a blockquote, inline
   code and a dark `<pre>` block, and a bibliography.
 
@@ -128,16 +138,24 @@ to "GitHub Actions".
 - **Approximate baselines**: text is placed at
   `rect.bottom − descent(fontSize)` with fontkit metrics, which can be off
   by a fraction of a point versus the browser's true line boxes.
-- **Single font family**: every font-family maps to Libertinus Serif.
-  Monospace content (`<code>`, `<pre>`) is *positioned* exactly (measured
-  rects) but *drawn* in a proportional serif, so spacing looks uneven.
+- **Two font families**: text maps to Libertinus Serif (Regular/Bold/
+  Italic/BoldItalic) or, for computed font-families matching `/mono/i`
+  (generic `monospace` or a family containing "mono"), to Libertinus Mono
+  Regular (bold/italic code falls back to regular mono, which is normal
+  for code). Adding another family means: drop the TTFs into
+  `public/fonts/`, add entries to `FONT_FILES` in `src/pdf-emitter.ts`,
+  and extend the mapping in `pickVariant`.
 - **Links are not clickable in the output PDF** (pdf-lib has no annotation
   support). Hyperlinks and cross references render as styled text only —
   cross-reference page numbers *are* resolved correctly, but nothing is
   clickable. There is a `TODO(links)` in `src/pdf-emitter.ts`, and the e2e
   test asserts the output contains zero annotations.
-- **Text decorations are not painted**: underline, line-through etc. are
-  dropped, so links appear as colored but non-underlined text.
+- **Underlines are not painted**: `text-decoration: underline` is dropped
+  (line-through IS drawn), so links appear as colored but non-underlined
+  text.
+- **Small caps are synthesized**: lowercase letters are drawn as uppercase
+  glyphs at 80% size, fitted to the measured word width. Real `smcp`
+  glyph substitution is not available through pdf-lib.
 - **Partial painting**: backgrounds and borders are drawn in document
   order — a simplification of the CSS stacking model. Only solid borders
   and solid background colors are painted; no border-radius, shadows,
@@ -149,16 +167,15 @@ to "GitHub Actions".
 - Words that wrap across lines (e.g. at hyphens) are re-grouped per line
   fragment by character measurement; browser-inserted hyphenation hyphens
   would not be reproduced.
-- `text-transform: capitalize` / `font-variant: small-caps` are not
-  reproduced.
+- `text-transform: capitalize` is not reproduced.
 - No PDF metadata, outlines/bookmarks, or tagged PDF structure.
 
 ## Next steps
 
 - Calibrate baselines per line (per-character range pass) instead of the
   descent heuristic.
-- Ship and map a monospace font; generalize the font registry by
-  font-family/weight/style.
+- Generalize the font registry (font-family/weight/style mapping table,
+  OpenType feature support for real small caps via shaping).
 - Link annotations via PDF object post-processing (or a PDF writer with
   annotation support), plus document metadata and bookmarks.
 - Keep SVGs vector (path extraction or embedding via PDF XObjects).

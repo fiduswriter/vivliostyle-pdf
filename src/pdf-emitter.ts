@@ -27,7 +27,9 @@ const FONT_FILES = {
     regular: "fonts/LibertinusSerif-Regular.ttf",
     bold: "fonts/LibertinusSerif-Bold.ttf",
     italic: "fonts/LibertinusSerif-Italic.ttf",
-    boldItalic: "fonts/LibertinusSerif-BoldItalic.ttf"
+    boldItalic: "fonts/LibertinusSerif-BoldItalic.ttf",
+    // Libertinus Mono has no bold/italic cuts; all monospace text maps here.
+    mono: "fonts/LibertinusMono-Regular.ttf"
 } as const
 
 type FontVariant = keyof typeof FONT_FILES
@@ -49,9 +51,14 @@ interface WordRun {
     x: number
     yTop: number
     yBottom: number
+    width: number
     fontSizePx: number
     variant: FontVariant
     color: RGB
+    /** draw a strike line through this run (text-decoration: line-through) */
+    lineThrough: boolean
+    /** synthesize small caps: lowercase drawn as uppercase at reduced size */
+    smallCaps: boolean
 }
 
 /**
@@ -185,13 +192,88 @@ async function emitPage(
         // (Approximation — see README "Limitations".)
         const baselinePx =
             word.yBottom - font.metrics.descent(word.fontSizePx)
-        page.drawText(word.text, {
-            x: word.x * PX_TO_PT,
-            y: pageHeightPt - baselinePx * PX_TO_PT,
-            size: sizePt,
+        const baselineY = pageHeightPt - baselinePx * PX_TO_PT
+        const xPt = word.x * PX_TO_PT
+        if (word.smallCaps) {
+            drawSmallCapsRun(
+                page,
+                word.text,
+                xPt,
+                baselineY,
+                sizePt,
+                word.width * PX_TO_PT,
+                font,
+                word.color
+            )
+        } else {
+            page.drawText(word.text, {
+                x: xPt,
+                y: baselineY,
+                size: sizePt,
+                font: font.pdfFont,
+                color: word.color
+            })
+        }
+        if (word.lineThrough) {
+            // Strike line at roughly mid x-height above the baseline.
+            const strikeY = baselineY + sizePt * 0.3
+            page.drawLine({
+                start: {x: xPt, y: strikeY},
+                end: {x: xPt + word.width * PX_TO_PT, y: strikeY},
+                thickness: Math.max(0.4, sizePt / 18),
+                color: word.color
+            })
+        }
+    }
+}
+
+/**
+ * Draw a run in synthesized small caps: lowercase letters become uppercase
+ * glyphs at a reduced size, everything else stays at full size. Chromium
+ * applies `font-variant-caps: small-caps` via glyph substitution at render
+ * time (the DOM text stays lowercase), so we reproduce it here — pdf-lib
+ * does not apply OpenType features such as `smcp`.
+ *
+ * Real small-cap glyphs are narrower than our scaled uppercase, so the
+ * synthesized run is uniformly scaled to fit the measured layout width of
+ * the word; otherwise it would overlap the following word.
+ */
+const SMALL_CAPS_SCALE = 0.8
+
+function drawSmallCapsRun(
+    page: import("pdf-lib").PDFPage,
+    text: string,
+    xPt: number,
+    baselineY: number,
+    sizePt: number,
+    targetWidthPt: number,
+    font: LoadedFont,
+    color: RGB
+): void {
+    // Per-character (text, size) pieces at their natural sizes.
+    const pieces = Array.from(text, ch => {
+        const isLower = ch.toUpperCase() !== ch
+        const out = isLower ? ch.toUpperCase() : ch
+        const size = isLower ? sizePt * SMALL_CAPS_SCALE : sizePt
+        return {out, size, advance: font.pdfFont.widthOfTextAtSize(out, size)}
+    })
+    const naturalWidth = pieces.reduce((sum, p) => sum + p.advance, 0)
+    // Fit to the measured width (clamped so a bad measurement can't
+    // produce absurd glyph sizes).
+    const fit =
+        naturalWidth > 0
+            ? Math.min(1.3, Math.max(0.6, targetWidthPt / naturalWidth))
+            : 1
+    let cursor = xPt
+    for (const piece of pieces) {
+        page.drawText(piece.out, {
+            x: cursor,
+            y: baselineY,
+            size: piece.size * fit,
             font: font.pdfFont,
-            color: word.color
+            color
         })
+        cursor += piece.advance * fit
     }
 }
 
@@ -441,12 +523,18 @@ function collectWords(
         }
         const color = parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0)
         const fontSizePx = parseFloat(style.fontSize)
-        const variant = pickVariant(style.fontWeight, style.fontStyle)
+        const variant = pickVariant(
+            style.fontWeight,
+            style.fontStyle,
+            style.fontFamily
+        )
         const transform = style.textTransform
+        const lineThrough = hasLineThrough(win, container, parent)
+        const smallCaps = style.fontVariantCaps.includes("small-caps")
         const text = textNode.data
 
         const applyTransform = (s: string): string => {
-            // (capitalize / small-caps not handled — prototype limitation.)
+            // (capitalize not handled — prototype limitation.)
             if (transform === "uppercase") {
                 return s.toUpperCase()
             }
@@ -461,9 +549,12 @@ function collectWords(
                 x: rect.left - containerRect.left,
                 yTop: rect.top - containerRect.top,
                 yBottom: rect.bottom - containerRect.top,
+                width: rect.width,
                 fontSizePx,
                 variant,
-                color
+                color,
+                lineThrough,
+                smallCaps
             })
         }
         const measureRange = (start: number, end: number): DOMRect => {
@@ -594,7 +685,11 @@ function collectListMarkers(
             continue
         }
         const fontSizePx = parseFloat(style.fontSize)
-        const variant = pickVariant(style.fontWeight, style.fontStyle)
+        const variant = pickVariant(
+            style.fontWeight,
+            style.fontStyle,
+            style.fontFamily
+        )
         const font = fonts[variant].pdfFont
         // Right-align the marker ending 0.4em left of the item's box.
         const markerWidthPx =
@@ -612,15 +707,63 @@ function collectListMarkers(
             yTop,
             // Approximate the first line's em box: font size plus a bit.
             yBottom: yTop + fontSizePx * 1.2,
+            width: markerWidthPx,
             fontSizePx,
             variant,
-            color: parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0)
+            color: parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0),
+            lineThrough: false,
+            smallCaps: false
         })
     }
     return runs
 }
 
-function pickVariant(fontWeight: string, fontStyle: string): FontVariant {
+/**
+ * Does any ancestor (up to the page container) carry
+ * `text-decoration-line: line-through`? Text decorations propagate to
+ * inline descendants visually, but the computed style only shows them on
+ * the element they are declared on — so walk up. Results are cached per
+ * ancestor element.
+ */
+const lineThroughCache = new WeakMap<HTMLElement, boolean>()
+
+function hasLineThrough(
+    win: Window,
+    container: HTMLElement,
+    el: HTMLElement
+): boolean {
+    const cached = lineThroughCache.get(el)
+    if (cached !== undefined) {
+        return cached
+    }
+    let result = false
+    let node: HTMLElement | null = el
+    while (node && node !== container) {
+        if (
+            win
+                .getComputedStyle(node)
+                .textDecorationLine.includes("line-through")
+        ) {
+            result = true
+            break
+        }
+        node = node.parentElement
+    }
+    lineThroughCache.set(el, result)
+    return result
+}
+
+function pickVariant(
+    fontWeight: string,
+    fontStyle: string,
+    fontFamily: string
+): FontVariant {
+    // Monospace maps to Libertinus Mono, which has no bold/italic cuts.
+    // Vivliostyle rewrites families (e.g. `Fnt_2, "Libertinus Mono",
+    // monospace`) but the original names survive in the computed value.
+    if (/mono/i.test(fontFamily)) {
+        return "mono"
+    }
     const weight = parseInt(fontWeight, 10)
     const bold = Number.isNaN(weight) ? fontWeight === "bold" : weight >= 600
     const italic = fontStyle === "italic" || fontStyle === "oblique"

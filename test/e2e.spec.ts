@@ -180,4 +180,22 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
     // …but the PDF contains no annotations at all: links are not clickable
     // (pdf-lib has no annotation support — documented limitation).
     expect(await countAnnotations(bytes)).toBe(0)
+
+    // 7. Inline styles. pdfjs inserts erratic spaces around the glyph-size
+    //    changes of synthesized small caps, so compare space-collapsed text.
+    const collapsed = allText.replace(/\s+/g, "")
+    // Small caps are synthesized as uppercase glyphs (pinned behavior):
+    expect(collapsed).toContain("SMALLCAPS") // span in the §2.2 sentence
+    expect(collapsed).toContain("INLINESTYLES") // small-caps h3 heading
+    expect(collapsed).toContain("ABSTRACT") // small-caps abstract label
+    // Strikethrough content is drawn as text (the strike line itself is a
+    // vector line, invisible to text extraction — verified visually).
+    expect(allText).toContain("strikethrough")
+    // "deleted emphasis" is struck through and straddles a page break:
+    // "deleted" ends page 2, "emphasis" starts page 3.
+    expect(pages[1]).toContain("deleted")
+    expect(pages[2]).toContain("emphasis shows that decorations compose")
+    // The <pre> code block renders in Libertinus Mono; its text is present.
+    expect(collapsed).toContain("paintBackgrounds(page,pdfPage)")
+    expect(allText).toContain("emitPdfFromVivliostyleWindow()")
 })

@@ -38,6 +38,12 @@ DOM→PDF emitter (src/pdf-emitter.ts)
     the page+top of their target element (two-pass, since a target may
     be emitted after the link; vivliostyle rewrites internal hrefs to
     "#viv-id-<encoded doc URL>:0023id" — the emitter strips that prefix)
+  • sets document metadata (Title/Author/Subject/Keywords/Creator/
+    Producer/Language, from the source document's <title>/<meta> tags),
+    builds a nested PDF outline (bookmarks) from the h1–h3 headings with
+    XYZ destinations, sets viewer preferences (PageMode /UseOutlines,
+    DisplayDocTitle), and embeds the pre-pagination source HTML as a
+    file attachment
   • embeds Libertinus Serif (Regular/Bold/Italic/BoldItalic) and
     Libertinus Mono (subsetted) via @pdfme/pdf-lib + foliojs fontkit v2;
     monospace is detected from the computed font-family (vivliostyle
@@ -116,7 +122,9 @@ numbers, cross-reference numbers against the actual pages of their
 targets, footnote bodies on the same page as their calls, external Link
 annotations for both URLs, GoTo annotations whose resolved destinations
 match the targets' actual pages, small-caps/strikethrough/code text
-presence, and zero console errors.
+presence, metadata fields, the outline tree (nesting + resolved
+destinations), the embedded HTML attachment, the PageMode/Lang/
+DisplayDocTitle catalog entries, and zero console errors.
 
 ## Develop
 
@@ -146,6 +154,30 @@ the feature-level text/annotation assertions described above.
 every push to `main`. The vite `base` is `/vivliostyle-pdf/`, so asset URLs
 work both on Pages and locally. Requires the repo's Pages source to be set
 to "GitHub Actions".
+
+## Beyond the print dialog
+
+Because the emitter writes the PDF itself, it can add structures that
+`window.print()` never produces:
+
+- **Document metadata**: Title, Author, Subject and Keywords come from
+  the source document's `<title>` and `<meta name="author|description|
+  keywords">` tags (parsed from the raw HTML — vivliostyle's iframe does
+  not retain the source `<head>`); Creator, Producer, the document
+  language (`/Lang en-US`) and creation/modification dates are set too.
+- **Outline (bookmarks)**: every h1–h3 heading becomes a bookmark,
+  nested by heading level, with an XYZ destination to the page and
+  vertical position of the heading. The outline tree is built with the
+  low-level object API (all item refs are registered first, then
+  Title/Parent/Dest/Prev/Next/First/Last/Count are wired up), and the
+  catalog's `PageMode` is set to `/UseOutlines` so viewers open the
+  bookmarks sidebar automatically.
+- **Viewer preferences**: `DisplayDocTitle` makes viewers show the
+  document title (rather than the file name) in the window title bar.
+- **Source attachment**: the pre-pagination HTML source is embedded as
+  a file attachment (`demo-document.html`), so the PDF is self-contained
+  and its source can be extracted with any PDF tool (`pdfdetach`,
+  Acrobat's attachments panel, etc.).
 
 ## Limitations (prototype)
 
@@ -179,7 +211,7 @@ to "GitHub Actions".
   fragment by character measurement; browser-inserted hyphenation hyphens
   would not be reproduced.
 - `text-transform: capitalize` is not reproduced.
-- No PDF metadata, outlines/bookmarks, or tagged PDF structure.
+- No tagged PDF structure (accessibility).
 
 ## Next steps
 
@@ -190,8 +222,6 @@ to "GitHub Actions".
 - Keep SVGs vector. @pdfme/pdf-lib has `page.drawSvg()`, but it drops
   `<marker>` arrowheads and sizes `<text>` with fallback font metrics
   (labels overflowed in a quick test), so SVGs stay rasterized for now.
-- PDF document metadata and bookmarks/outlines (the page targets needed
-  for outlines are already computed for GoTo links).
 - Follow the CSS paint-order spec for overlapping content.
 - Reuse the emitter for Fidus Writer's client-side PDF export.
 

@@ -89,7 +89,11 @@
             caps, monospace code), and hyperlinks. In the generated PDF,
             links are clickable annotations: external links open their
             URL, and TOC entries / cross references jump to the target
-            page.
+            page. The PDF also carries things the print dialog cannot
+            produce: document metadata from the source's
+            <code>&lt;title&gt;</code>/<code>&lt;meta&gt;</code> tags, a
+            bookmarks sidebar (shown automatically), and the pre-pagination
+            HTML source embedded as a file attachment.
         </p>
         <p>
             <button id="generate" type="button">Generate PDF</button>

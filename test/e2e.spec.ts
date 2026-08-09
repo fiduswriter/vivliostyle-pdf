@@ -1,6 +1,6 @@
 import {expect, test} from "@playwright/test"
 import {readFile} from "node:fs/promises"
-import {PDFDocument} from "@pdfme/pdf-lib"
+import {PDFDict, PDFDocument, PDFName, PDFRef} from "@pdfme/pdf-lib"
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs"
 
 interface PdfjsAnnotation {
@@ -285,4 +285,76 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
     // The <pre> code block renders in Libertinus Mono; its text is present.
     expect(collapsed).toContain("paintBackgrounds(page,pdfPage)")
     expect(allText).toContain("emitPdfFromVivliostyleWindow()")
+
+    // 8. Document metadata (from the demo document's <title>/<meta> tags).
+    const doc2 = await pdfjs.getDocument({data: new Uint8Array(bytes)}).promise
+    const {info} = await doc2.getMetadata()
+    const meta = info as Record<string, unknown>
+    expect(String(meta.Title)).toContain("Client-Side Paged Media")
+    expect(meta.Author).toBe("J. Wilm and A. Researcher")
+    expect(String(meta.Subject)).toContain("browser-only production")
+    expect(String(meta.Keywords)).toContain("vivliostyle")
+    expect(String(meta.Creator)).toContain("vivliostyle-pdf")
+    expect(String(meta.Producer)).toContain("@pdfme/pdf-lib")
+
+    // 9. Outline / bookmarks: the h1–h3 heading tree is present, nested,
+    //    and its destinations resolve to the right pages.
+    interface OutlineItem {
+        title: string
+        dest: unknown
+        items?: OutlineItem[]
+    }
+    const outline = (await doc2.getOutline()) as OutlineItem[] | null
+    expect(outline).not.toBeNull()
+    const flatten = (items: OutlineItem[]): OutlineItem[] =>
+        items.flatMap(item => [item, ...flatten(item.items ?? [])])
+    const flat = flatten(outline!)
+    expect(flat.length).toBeGreaterThanOrEqual(12)
+    expect(flat.some(item => item.title.includes("Introduction"))).toBe(true)
+    expect(flat.some(item => item.title.includes("Tabular Results"))).toBe(
+        true
+    )
+    // h2 "The Pagination Pipeline" nests its h3 subsections.
+    const pipeline = flat.find(item =>
+        item.title.includes("The Pagination Pipeline")
+    )
+    expect(pipeline).toBeTruthy()
+    expect(
+        (pipeline!.items ?? []).some(item => item.title.includes("Overview")),
+        "h3 nested below its h2"
+    ).toBe(true)
+    // Bookmark destinations land on the pages where the headings are.
+    const tabular = flat.find(item => item.title.includes("Tabular Results"))
+    const tabularDest = await resolveDestPageIndex(doc2, tabular!.dest)
+    expect(tabularDest).toBe(pageContaining(pages, "Tabular Results", 2) - 1)
+
+    // 10. The source HTML is embedded as an attachment. (pdfjs v6 returns a
+    //     Map of FileSpec metadata here; content is fetched separately.)
+    const atts = (await doc2.getAttachments()) as Map<
+        string,
+        {filename: string; description: string}
+    > | null
+    expect(atts?.has("demo-document.html")).toBe(true)
+    const attContent = await doc2.getAttachmentContent("demo-document.html")
+    expect(attContent).not.toBeNull()
+    const attHead = new TextDecoder()
+        .decode(attContent!.subarray(0, 100))
+        .toLowerCase()
+    expect(attHead).toContain("<!doctype html")
+
+    // 11. Catalog-level viewer preferences (@pdfme/pdf-lib can read these
+    //     low-level dictionaries, pdfjs does not expose them).
+    const loaded = await PDFDocument.load(bytes)
+    expect(String(loaded.catalog.get(PDFName.of("PageMode")))).toContain(
+        "UseOutlines"
+    )
+    expect(String(loaded.catalog.get(PDFName.of("Lang")))).toContain("en-US")
+    let vp = loaded.catalog.get(PDFName.of("ViewerPreferences"))
+    if (vp instanceof PDFRef) {
+        vp = loaded.context.lookup(vp)
+    }
+    expect(vp).toBeInstanceOf(PDFDict)
+    expect(String((vp as PDFDict).get(PDFName.of("DisplayDocTitle")))).toBe(
+        "true"
+    )
 })

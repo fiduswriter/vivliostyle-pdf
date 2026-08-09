@@ -19,7 +19,15 @@
  *  Y is flipped when drawing.
  */
 import * as fontkit from "fontkit"
-import {PDFDocument, PDFFont, PDFString, rgb} from "@pdfme/pdf-lib"
+import {
+    PDFDocument,
+    PDFDict,
+    PDFName,
+    PDFFont,
+    PDFRef,
+    PDFString,
+    rgb
+} from "@pdfme/pdf-lib"
 import type {PDFPage, RGB} from "@pdfme/pdf-lib"
 
 const PX_TO_PT = 0.75
@@ -63,17 +71,38 @@ interface WordRun {
     smallCaps: boolean
 }
 
+/** Document metadata to embed (sourced from the original HTML head — the
+    paginated iframe DOM does not retain the source <head>). */
+export interface EmitMetadata {
+    title?: string
+    author?: string
+    subject?: string
+    /** comma-separated */
+    keywords?: string
+    language?: string
+}
+
+/** Optional extras for emitPdfFromVivliostyleWindow. */
+export interface EmitOptions {
+    /** The document's HTML source, embedded as a file attachment. */
+    sourceHtml?: string
+    /** Document metadata from the original HTML head. */
+    metadata?: EmitMetadata
+}
+
 /**
  * Emit a PDF from the window of a vivliostyle-print iframe after pagination
  * has completed.
  *
  * @param win  the iframe window passed to printCallback
  * @param onProgress  optional status callback for UI feedback
+ * @param options  optional extras (HTML source attachment)
  * @returns the PDF file bytes
  */
 export async function emitPdfFromVivliostyleWindow(
     win: Window,
-    onProgress?: (message: string) => void
+    onProgress?: (message: string) => void,
+    options?: EmitOptions
 ): Promise<Uint8Array> {
     const doc = win.document
     const pageContainers = Array.from(
@@ -115,6 +144,7 @@ export async function emitPdfFromVivliostyleWindow(
     // are recorded per page and the annotations are attached afterwards.
     const links: CollectedLink[] = []
     const anchorTargets = new Map<string, AnchorTarget>()
+    const headings: CollectedHeading[] = []
 
     for (const [index, container] of pageContainers.entries()) {
         onProgress?.(`Emitting page ${index + 1} of ${pageContainers.length}…`)
@@ -127,8 +157,28 @@ export async function emitPdfFromVivliostyleWindow(
             anchorTargets
         )
         collectLinks(win, container, pageHeightPt, index, links)
+        collectHeadings(container, pageHeightPt, index, headings)
     }
     addLinkAnnotations(pdfDoc, links, anchorTargets)
+
+    // Beyond-the-print-dialog extras: metadata, bookmarks, attachment.
+    onProgress?.("Adding metadata, outline and attachment…")
+    addMetadata(pdfDoc, options?.metadata ?? {})
+    buildOutline(pdfDoc, headings)
+    if (options?.sourceHtml) {
+        const now = new Date()
+        await pdfDoc.attach(
+            new TextEncoder().encode(options.sourceHtml),
+            "demo-document.html",
+            {
+                mimeType: "text/html",
+                description:
+                    "HTML source of this document (before vivliostyle pagination)",
+                creationDate: now,
+                modificationDate: now
+            }
+        )
+    }
 
     onProgress?.("Serializing PDF…")
     return pdfDoc.save()
@@ -405,6 +455,164 @@ function addLinkAnnotations(
             page.node.addAnnot(annotRef)
         }
     }
+}
+
+/* ---- Metadata, outline, viewer preferences --------------------------
+ * None of these are obtainable via the browser print dialog.
+ * ------------------------------------------------------------------ */
+
+/** Set document metadata (sourced from the original HTML head). */
+function addMetadata(pdfDoc: PDFDocument, meta: EmitMetadata): void {
+    // showInWindowTitleBar sets ViewerPreferences/DisplayDocTitle: true.
+    pdfDoc.setTitle(meta.title ?? "Untitled", {showInWindowTitleBar: true})
+    if (meta.author) {
+        pdfDoc.setAuthor(meta.author)
+    }
+    if (meta.subject) {
+        pdfDoc.setSubject(meta.subject)
+    }
+    if (meta.keywords) {
+        pdfDoc.setKeywords(
+            meta.keywords
+                .split(",")
+                .map(k => k.trim())
+                .filter(Boolean)
+        )
+    }
+    pdfDoc.setCreator(
+        "vivliostyle-pdf prototype (vivliostyle + DOM-to-PDF emitter)"
+    )
+    pdfDoc.setProducer("@pdfme/pdf-lib 6.1 + fontkit 2")
+    pdfDoc.setLanguage(meta.language ?? "en-US")
+    const now = new Date()
+    pdfDoc.setCreationDate(now)
+    pdfDoc.setModificationDate(now)
+}
+
+interface CollectedHeading {
+    text: string
+    level: number
+    pageIndex: number
+    /** top edge of the heading, in PDF pt from the page bottom */
+    yTopPt: number
+}
+
+/** Record h1–h3 headings (with their generated section numbers) per page. */
+function collectHeadings(
+    container: HTMLElement,
+    pageHeightPt: number,
+    pageIndex: number,
+    headings: CollectedHeading[]
+): void {
+    const containerRect = container.getBoundingClientRect()
+    for (const el of Array.from(
+        container.querySelectorAll<HTMLElement>("h1, h2, h3")
+    )) {
+        const rect = el.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) {
+            continue
+        }
+        const text = (el.textContent ?? "").replace(/\s+/g, " ").trim()
+        if (!text) {
+            continue
+        }
+        headings.push({
+            text,
+            level: Number(el.tagName[1]),
+            pageIndex,
+            yTopPt: pageHeightPt - (rect.top - containerRect.top) * PX_TO_PT
+        })
+    }
+}
+
+/**
+ * Build the PDF outline (bookmarks sidebar) from the collected headings:
+ * a root /Outlines dict with nested outline item dicts linked via
+ * First/Last/Prev/Next/Parent, and /PageMode /UseOutlines on the catalog
+ * so viewers open with the bookmarks panel visible.
+ */
+function buildOutline(pdfDoc: PDFDocument, headings: CollectedHeading[]): void {
+    if (headings.length === 0) {
+        return
+    }
+    const context = pdfDoc.context
+    const pages = pdfDoc.getPages()
+
+    interface OutlineNode {
+        heading: CollectedHeading
+        children: OutlineNode[]
+    }
+
+    // Nest by heading level: an h2 nests under the preceding h1, etc.
+    const topNodes: OutlineNode[] = []
+    const stack: OutlineNode[] = []
+    for (const heading of headings) {
+        const node: OutlineNode = {heading, children: []}
+        while (
+            stack.length > 0 &&
+            stack[stack.length - 1].heading.level >= heading.level
+        ) {
+            stack.pop()
+        }
+        if (stack.length === 0) {
+            topNodes.push(node)
+        } else {
+            stack[stack.length - 1].children.push(node)
+        }
+        stack.push(node)
+    }
+
+    const outlinesRef = context.register(context.obj({}))
+
+    const createItems = (
+        nodes: OutlineNode[],
+        parentRef: PDFRef
+    ): {first: PDFRef; last: PDFRef; count: number} => {
+        // Refs must exist before they can reference each other.
+        const refs = nodes.map(() => context.register(context.obj({})))
+        let count = 0
+        nodes.forEach((node, i) => {
+            const dict = context.lookup(refs[i]) as PDFDict
+            dict.set(PDFName.of("Title"), PDFString.of(node.heading.text))
+            dict.set(PDFName.of("Parent"), parentRef)
+            dict.set(
+                PDFName.of("Dest"),
+                context.obj([
+                    pages[node.heading.pageIndex].ref,
+                    "XYZ",
+                    null,
+                    node.heading.yTopPt,
+                    null
+                ])
+            )
+            if (i > 0) {
+                dict.set(PDFName.of("Prev"), refs[i - 1])
+            }
+            if (i < nodes.length - 1) {
+                dict.set(PDFName.of("Next"), refs[i + 1])
+            }
+            count += 1
+            if (node.children.length > 0) {
+                const children = createItems(node.children, refs[i])
+                dict.set(PDFName.of("First"), children.first)
+                dict.set(PDFName.of("Last"), children.last)
+                // Positive Count: subtree is shown expanded.
+                dict.set(PDFName.of("Count"), context.obj(children.count))
+                count += children.count
+            }
+        })
+        return {first: refs[0], last: refs[refs.length - 1], count}
+    }
+
+    const top = createItems(topNodes, outlinesRef)
+    const rootDict = context.lookup(outlinesRef) as PDFDict
+    rootDict.set(PDFName.of("Type"), PDFName.of("Outlines"))
+    rootDict.set(PDFName.of("First"), top.first)
+    rootDict.set(PDFName.of("Last"), top.last)
+    rootDict.set(PDFName.of("Count"), context.obj(top.count))
+
+    pdfDoc.catalog.set(PDFName.of("Outlines"), outlinesRef)
+    pdfDoc.catalog.set(PDFName.of("PageMode"), PDFName.of("UseOutlines"))
 }
 
 /**

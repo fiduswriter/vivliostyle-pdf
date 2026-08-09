@@ -65,9 +65,32 @@ function generate(): void {
                 const iframe = iframeWindow.frameElement
                 try {
                     setStatus("Pagination complete. Emitting PDF…")
+                    // The paginated iframe DOM does not retain the source
+                    // <head>, so metadata is parsed from the raw source.
+                    const sourceDoc = new DOMParser().parseFromString(
+                        demoHtml,
+                        "text/html"
+                    )
+                    const metaContent = (name: string) =>
+                        sourceDoc
+                            .querySelector(`meta[name="${name}"]`)
+                            ?.getAttribute("content") ?? undefined
                     const bytes = await emitPdfFromVivliostyleWindow(
                         iframeWindow,
-                        setStatus
+                        setStatus,
+                        {
+                            sourceHtml: demoHtml,
+                            metadata: {
+                                title:
+                                    sourceDoc
+                                        .querySelector("title")
+                                        ?.textContent?.trim() ?? undefined,
+                                author: metaContent("author"),
+                                subject: metaContent("description"),
+                                keywords: metaContent("keywords"),
+                                language: "en-US"
+                            }
+                        }
                     )
                     downloadPdf(bytes, "demo.pdf")
                     setStatus(

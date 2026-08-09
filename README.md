@@ -1,5 +1,8 @@
 # vivliostyle-pdf
 
+**Live demo:** <https://johanneswilm.github.io/vivliostyle-pdf/> — click
+"Generate PDF"; everything happens client-side, no print dialog.
+
 Technical prototype: **browser-only PDF export without the print dialog.**
 
 [vivliostyle](https://vivliostyle.org/) paginates an HTML/CSS Paged Media

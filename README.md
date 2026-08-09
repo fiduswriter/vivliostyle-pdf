@@ -187,5 +187,6 @@ to "GitHub Actions".
 
 ## Licenses
 
-- Code: AGPL-3.0 (following vivliostyle's licensing).
+- Code: LGPL-3.0 (see `LICENSE`). Note that the runtime dependencies
+  carry their own licenses — vivliostyle is AGPL-3.0.
 - Libertinus Serif: SIL Open Font License 1.1 (`public/fonts/OFL.txt`).

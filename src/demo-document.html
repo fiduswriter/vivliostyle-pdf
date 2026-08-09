@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>Client-Side Paged Media: A Study of Browser-Based PDF Production</title>
+        <style>
+            /* ---- Fonts (same Libertinus Serif files the PDF emitter embeds) ---- */
+            @font-face {
+                font-family: "Libertinus Serif";
+                src: url("__BASE__fonts/LibertinusSerif-Regular.ttf");
+                font-weight: normal;
+                font-style: normal;
+            }
+            @font-face {
+                font-family: "Libertinus Serif";
+                src: url("__BASE__fonts/LibertinusSerif-Bold.ttf");
+                font-weight: bold;
+                font-style: normal;
+            }
+            @font-face {
+                font-family: "Libertinus Serif";
+                src: url("__BASE__fonts/LibertinusSerif-Italic.ttf");
+                font-weight: normal;
+                font-style: italic;
+            }
+            @font-face {
+                font-family: "Libertinus Serif";
+                src: url("__BASE__fonts/LibertinusSerif-BoldItalic.ttf");
+                font-weight: bold;
+                font-style: italic;
+            }
+
+            /* ---- Paged media setup ---- */
+            @page {
+                size: A4;
+                margin: 22mm 20mm 24mm 20mm;
+                @top-center {
+                    content: string(doctitle);
+                    font-family: "Libertinus Serif", serif;
+                    font-size: 9pt;
+                    color: #555;
+                    border-bottom: 0.5pt solid #999;
+                    margin-bottom: 4mm;
+                    vertical-align: bottom;
+                    padding-bottom: 2mm;
+                    width: 100%;
+                }
+                @bottom-center {
+                    content: counter(page) " / " counter(pages);
+                    font-family: "Libertinus Serif", serif;
+                    font-size: 9pt;
+                    color: #555;
+                }
+                @footnote {
+                    border-top: 0.5pt solid #999;
+                    padding-top: 6pt;
+                    margin-top: 8pt;
+                }
+            }
+
+            html {
+                font-family: "Libertinus Serif", serif;
+                font-size: 11pt;
+                line-height: 1.45;
+                color: #1a1a1a;
+            }
+
+            body {
+                counter-reset: section subsection footnote;
+            }
+
+            h1.doctitle {
+                string-set: doctitle content();
+                font-size: 20pt;
+                text-align: center;
+                margin: 0 0 4pt 0;
+            }
+            p.authors {
+                text-align: center;
+                font-style: italic;
+                margin: 0 0 2pt 0;
+            }
+            p.affiliation {
+                text-align: center;
+                font-size: 9.5pt;
+                color: #444;
+                margin: 0 0 14pt 0;
+            }
+            div.abstract {
+                margin: 0 12mm 14pt 12mm;
+                padding: 6pt 10pt;
+                background: #f2f2f2;
+                border-left: 2.5pt solid #2456a6;
+                font-size: 10pt;
+            }
+            div.abstract p {
+                margin: 0;
+            }
+            div.abstract strong {
+                font-style: normal;
+            }
+
+            h2 {
+                counter-reset: subsection;
+                font-size: 14pt;
+                margin: 16pt 0 6pt 0;
+                counter-increment: section;
+            }
+            h2::before {
+                content: counter(section) ". ";
+            }
+            h3 {
+                font-size: 12pt;
+                margin: 12pt 0 4pt 0;
+                counter-increment: subsection;
+            }
+            h3::before {
+                content: counter(section) "." counter(subsection) " ";
+            }
+
+            p {
+                margin: 0 0 6pt 0;
+                text-align: justify;
+            }
+            blockquote {
+                margin: 8pt 10mm;
+                font-style: italic;
+                color: #333;
+                border-left: 2pt solid #bbb;
+                padding-left: 8pt;
+            }
+            code {
+                font-family: monospace;
+                font-size: 9.5pt;
+                background: #f0f0f0;
+                padding: 0 2pt;
+            }
+            pre {
+                font-family: monospace;
+                font-size: 9pt;
+                line-height: 1.35;
+                background: #2d2d2d;
+                color: #f8f8f2;
+                padding: 8pt 10pt;
+                margin: 8pt 0;
+                white-space: pre;
+            }
+            pre .kw { color: #66d9ef; }
+            pre .str { color: #a6e22e; }
+
+            ul, ol {
+                margin: 4pt 0 8pt 0;
+            }
+            li {
+                margin-bottom: 2pt;
+            }
+
+            /* ---- Tables ---- */
+            table {
+                border-collapse: collapse;
+                margin: 8pt auto;
+                font-size: 10pt;
+            }
+            caption {
+                caption-side: top;
+                font-size: 9.5pt;
+                font-style: italic;
+                margin-bottom: 3pt;
+                text-align: left;
+            }
+            table.simple td, table.simple th {
+                border: 0.5pt solid #666;
+                padding: 3pt 8pt;
+            }
+            table.bordered {
+                width: 100%;
+            }
+            table.bordered th {
+                background: #2456a6;
+                color: #fff;
+                padding: 4pt 8pt;
+                border: 0.5pt solid #1a3d73;
+                text-align: left;
+            }
+            table.bordered td {
+                border: 0.5pt solid #2456a6;
+                padding: 3pt 8pt;
+            }
+            table.bordered tr:nth-child(even) td {
+                background: #eaf1fb;
+            }
+            table.longtable {
+                width: 100%;
+            }
+            table.longtable th {
+                background: #444;
+                color: #fff;
+                padding: 3pt 8pt;
+                border: 0.5pt solid #333;
+                text-align: left;
+            }
+            table.longtable td {
+                border-bottom: 0.4pt solid #bbb;
+                padding: 2.5pt 8pt;
+            }
+
+            /* ---- Figures ---- */
+            figure {
+                margin: 10pt 0;
+                text-align: center;
+                break-inside: avoid;
+            }
+            figure img {
+                max-width: 100%;
+            }
+            figcaption {
+                font-size: 9.5pt;
+                font-style: italic;
+                color: #444;
+                margin-top: 3pt;
+            }
+
+            /* ---- Footnotes ---- */
+            span.fn {
+                float: footnote;
+                font-size: 9pt;
+                text-align: left;
+            }
+            ::footnote-call {
+                content: counter(footnote);
+                vertical-align: super;
+                font-size: 0.7em;
+                color: #2456a6;
+            }
+            ::footnote-marker {
+                content: counter(footnote) ". ";
+                font-weight: bold;
+            }
+
+            /* ---- TOC ---- */
+            nav.toc {
+                break-after: page;
+            }
+            nav.toc h2.notoc {
+                font-size: 16pt;
+            }
+            nav.toc h2::before {
+                content: none;
+            }
+            nav.toc ol {
+                list-style: none;
+                padding-left: 0;
+            }
+            nav.toc li {
+                margin-bottom: 3pt;
+            }
+            nav.toc a {
+                text-decoration: none;
+                color: #1a1a1a;
+            }
+            nav.toc a::after {
+                content: leader(".") " " target-counter(attr(href url), page);
+                color: #555;
+            }
+
+            /* ---- Bibliography ---- */
+            ol.bibliography {
+                font-size: 10pt;
+            }
+            ol.bibliography li {
+                margin-bottom: 4pt;
+            }
+        </style>
+    </head>
+    <body>
+        <h1 class="doctitle">Client-Side Paged Media</h1>
+        <p class="authors">J. Wilm<sup>a</sup> and A. Researcher<sup>b</sup></p>
+        <p class="affiliation">
+            <sup>a</sup> Fidus Writer Project · <sup>b</sup> Institute for
+            Document Engineering
+        </p>
+
+        <div class="abstract">
+            <p>
+                <strong>Abstract.</strong> We demonstrate that print-quality
+                PDF documents can be produced entirely inside a web browser,
+                without invoking the browser's print dialog. A pagination
+                engine lays out HTML and CSS Paged Media in a hidden frame; a
+                lightweight emitter then re-renders the measured layout as a
+                vector PDF. We evaluate the approach on a document containing
+                running headers, footnotes, tables that span page breaks, and
+                both vector and raster figures.
+            </p>
+        </div>
+
+        <nav class="toc">
+            <h2 class="notoc">Contents</h2>
+            <ol>
+                <li><a href="#sec-intro">Introduction</a></li>
+                <li><a href="#sec-pipeline">The Pagination Pipeline</a></li>
+                <li><a href="#sec-tables">Tabular Results</a></li>
+                <li><a href="#sec-figures">Figures</a></li>
+                <li><a href="#sec-discussion">Discussion</a></li>
+                <li><a href="#sec-conclusion">Conclusion</a></li>
+                <li><a href="#sec-refs">References</a></li>
+            </ol>
+        </nav>
+
+        <h2 id="sec-intro">Introduction</h2>
+        <p>
+            Producing PDF documents from structured markup has traditionally
+            required server-side tooling or a detour through the browser's
+            print dialog.<span class="fn"
+                >Print-dialog workflows cannot be automated and produce PDFs
+                whose fonts and margins vary between browsers.</span
+            >
+            Both options are awkward for applications that already hold a
+            complete, styled document in the DOM. This prototype explores a
+            third path: paginate with <em>CSS Paged Media</em> in the browser
+            and emit the resulting layout directly as PDF bytes.
+        </p>
+        <p>
+            The approach rests on two observations. First, a modern pagination
+            engine can resolve <code>@page</code> rules, running headers,
+            footnotes and page counters entirely in JavaScript. Second, once
+            pagination has run, every glyph's position is knowable through
+            standard geometry APIs such as
+            <code>Range.getClientRects()</code>. Re-rendering those positions
+            with a PDF writer yields a faithful, fully vector
+            document.<span class="fn"
+                >"Faithful" here means glyph-identical for text and
+                pixel-identical for raster content; vector figures are
+                rasterized in the current prototype.</span
+            >
+        </p>
+        <blockquote>
+            The best print stylesheet is the one that never meets a printer.
+            — An anonymous typesetter, presumably
+        </blockquote>
+        <p>
+            The remainder of this report is organized as follows. Section 2
+            describes the pipeline. Sections 3 and 4 stress-test it with
+            tables and figures. Section 5 discusses limitations, and Section 6
+            concludes.
+        </p>
+
+        <h2 id="sec-pipeline">The Pagination Pipeline</h2>
+        <h3>Overview</h3>
+        <p>
+            The pipeline consists of four stages, executed in order:
+        </p>
+        <ol>
+            <li>
+                <strong>Assembly.</strong> The source document — HTML with
+                embedded CSS Paged Media rules — is handed to the pagination
+                engine together with a base URL so that fonts and images
+                resolve.
+            </li>
+            <li>
+                <strong>Pagination.</strong> The engine lays the document out
+                in a hidden frame, producing one container element per page,
+                including margin boxes for headers and footers:
+                <ul>
+                    <li>page area with flowed content,</li>
+                    <li>footnote area at the bottom of the page,</li>
+                    <li>
+                        generated margin content (page numbers, running
+                        titles).
+                    </li>
+                </ul>
+            </li>
+            <li>
+                <strong>Measurement.</strong> For every page, text is measured
+                word by word; images, backgrounds and borders are measured by
+                element.
+            </li>
+            <li>
+                <strong>Emission.</strong> The measured items are drawn into a
+                PDF with flipped Y coordinates, embedded subsetted fonts, and
+                the file is downloaded.
+            </li>
+        </ol>
+        <h3>Emitter sketch</h3>
+        <p>
+            The core loop of the emitter is deliberately simple:
+        </p>
+        <pre><span class="kw">for</span> (<span class="kw">const</span> page of pages) {
+  <span class="kw">const</span> pdfPage = doc.addPage(sizeOf(page))
+  paintBackgrounds(page, pdfPage)
+  paintBorders(page, pdfPage)
+  <span class="kw">await</span> paintImages(page, pdfPage)
+  <span class="kw">for</span> (<span class="kw">const</span> word of collectWords(page)) {
+    pdfPage.drawText(word.text, {
+      x: word.x * <span class="str">PX_TO_PT</span>,
+      y: pageHeight - word.baseline * <span class="str">PX_TO_PT</span>,
+      font: pickFont(word.style)
+    })
+  }
+}</pre>
+        <p>
+            Because each word is positioned from its own measured rectangle,
+            browser line breaking, justification and hyphenation are preserved
+            exactly; the emitter never re-breaks a line.<span class="fn"
+                >Justified text survives because inter-word <em>positions</em>
+                are copied, not the spacing rules that produced them.</span
+            >
+        </p>
+
+        <h2 id="sec-tables">Tabular Results</h2>
+        <h3>A small comparison</h3>
+        <p>
+            Table 1 compares the prototype's output with the traditional
+            print-dialog route.
+        </p>
+        <table class="simple">
+            <caption>Table 1: Qualitative comparison of export routes.</caption>
+            <thead>
+                <tr><th>Criterion</th><th>Print dialog</th><th>This prototype</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Automatable</td><td>No</td><td>Yes</td></tr>
+                <tr><td>Vector text</td><td>Yes</td><td>Yes</td></tr>
+                <tr><td>Deterministic fonts</td><td>No</td><td>Yes</td></tr>
+                <tr><td>Link annotations</td><td>Sometimes</td><td>Not yet</td></tr>
+            </tbody>
+        </table>
+        <h3>Feature matrix</h3>
+        <p>
+            Table 2 records which Paged Media features the pipeline exercises
+            in this very document.
+        </p>
+        <table class="bordered">
+            <caption>Table 2: CSS Paged Media features exercised.</caption>
+            <thead>
+                <tr>
+                    <th>Feature</th>
+                    <th>CSS construct</th>
+                    <th>Used on</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Page size</td><td><code>@page { size: A4 }</code></td><td>all pages</td><td>works</td></tr>
+                <tr><td>Running header</td><td><code>@top-center</code>, <code>string-set</code></td><td>all pages</td><td>works</td></tr>
+                <tr><td>Page counter</td><td><code>@bottom-center</code>, <code>counter(page)</code></td><td>all pages</td><td>works</td></tr>
+                <tr><td>Footnotes</td><td><code>float: footnote</code></td><td>§1–2</td><td>works</td></tr>
+                <tr><td>TOC page refs</td><td><code>target-counter()</code></td><td>contents page</td><td>works</td></tr>
+                <tr><td>Leader dots</td><td><code>leader(".")</code></td><td>contents page</td><td>works</td></tr>
+                <tr><td>Table page breaks</td><td>implicit</td><td>Table 3</td><td>works</td></tr>
+            </tbody>
+        </table>
+        <h3>A long table</h3>
+        <p>
+            Table 3 is intentionally long enough to span a page break, testing
+            that the emitter measures every row on whichever page the
+            paginator placed it.
+        </p>
+        <table class="longtable">
+            <caption>Table 3: Processing time per synthetic benchmark row (ms).</caption>
+            <thead>
+                <tr><th>Row</th><th>Paginate</th><th>Measure</th><th>Emit</th><th>Total</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>r01</td><td>12.1</td><td>3.3</td><td>4.2</td><td>19.6</td></tr>
+                <tr><td>r02</td><td>11.8</td><td>3.1</td><td>4.0</td><td>18.9</td></tr>
+                <tr><td>r03</td><td>12.4</td><td>3.4</td><td>4.1</td><td>19.9</td></tr>
+                <tr><td>r04</td><td>12.0</td><td>3.2</td><td>4.3</td><td>19.5</td></tr>
+                <tr><td>r05</td><td>12.2</td><td>3.3</td><td>4.2</td><td>19.7</td></tr>
+                <tr><td>r06</td><td>11.9</td><td>3.2</td><td>4.1</td><td>19.2</td></tr>
+                <tr><td>r07</td><td>12.3</td><td>3.5</td><td>4.4</td><td>20.2</td></tr>
+                <tr><td>r08</td><td>12.1</td><td>3.3</td><td>4.2</td><td>19.6</td></tr>
+                <tr><td>r09</td><td>12.5</td><td>3.4</td><td>4.3</td><td>20.2</td></tr>
+                <tr><td>r10</td><td>12.0</td><td>3.2</td><td>4.1</td><td>19.3</td></tr>
+                <tr><td>r11</td><td>12.2</td><td>3.3</td><td>4.2</td><td>19.7</td></tr>
+                <tr><td>r12</td><td>11.7</td><td>3.1</td><td>4.0</td><td>18.8</td></tr>
+                <tr><td>r13</td><td>12.3</td><td>3.4</td><td>4.2</td><td>19.9</td></tr>
+                <tr><td>r14</td><td>12.1</td><td>3.3</td><td>4.1</td><td>19.5</td></tr>
+                <tr><td>r15</td><td>12.4</td><td>3.5</td><td>4.3</td><td>20.2</td></tr>
+                <tr><td>r16</td><td>11.9</td><td>3.2</td><td>4.1</td><td>19.2</td></tr>
+                <tr><td>r17</td><td>12.2</td><td>3.3</td><td>4.2</td><td>19.7</td></tr>
+                <tr><td>r18</td><td>12.0</td><td>3.2</td><td>4.0</td><td>19.2</td></tr>
+                <tr><td>r19</td><td>12.3</td><td>3.4</td><td>4.2</td><td>19.9</td></tr>
+                <tr><td>r20</td><td>12.1</td><td>3.3</td><td>4.1</td><td>19.5</td></tr>
+                <tr><td>r21</td><td>12.2</td><td>3.4</td><td>4.2</td><td>19.8</td></tr>
+                <tr><td>r22</td><td>11.8</td><td>3.1</td><td>4.0</td><td>18.9</td></tr>
+                <tr><td>r23</td><td>12.4</td><td>3.5</td><td>4.3</td><td>20.2</td></tr>
+                <tr><td>r24</td><td>12.0</td><td>3.2</td><td>4.1</td><td>19.3</td></tr>
+                <tr><td>r25</td><td>12.2</td><td>3.3</td><td>4.2</td><td>19.7</td></tr>
+                <tr><td>r26</td><td>12.1</td><td>3.3</td><td>4.1</td><td>19.5</td></tr>
+                <tr><td>r27</td><td>12.3</td><td>3.4</td><td>4.2</td><td>19.9</td></tr>
+                <tr><td>r28</td><td>11.9</td><td>3.2</td><td>4.0</td><td>19.1</td></tr>
+                <tr><td>r29</td><td>12.2</td><td>3.3</td><td>4.2</td><td>19.7</td></tr>
+                <tr><td>r30</td><td>12.0</td><td>3.2</td><td>4.1</td><td>19.3</td></tr>
+                <tr><td>r31</td><td>12.4</td><td>3.5</td><td>4.3</td><td>20.2</td></tr>
+                <tr><td>r32</td><td>12.1</td><td>3.3</td><td>4.2</td><td>19.6</td></tr>
+                <tr><td>r33</td><td>12.3</td><td>3.4</td><td>4.2</td><td>19.9</td></tr>
+                <tr><td>r34</td><td>11.8</td><td>3.1</td><td>4.0</td><td>18.9</td></tr>
+                <tr><td>r35</td><td>12.2</td><td>3.3</td><td>4.2</td><td>19.7</td></tr>
+                <tr><td>r36</td><td>12.0</td><td>3.2</td><td>4.1</td><td>19.3</td></tr>
+                <tr><td>r37</td><td>12.1</td><td>3.3</td><td>4.1</td><td>19.5</td></tr>
+                <tr><td>r38</td><td>12.4</td><td>3.5</td><td>4.3</td><td>20.2</td></tr>
+                <tr><td>r39</td><td>11.9</td><td>3.2</td><td>4.0</td><td>19.1</td></tr>
+                <tr><td>r40</td><td>12.2</td><td>3.4</td><td>4.2</td><td>19.8</td></tr>
+            </tbody>
+        </table>
+
+        <h2 id="sec-figures">Figures</h2>
+        <p>
+            The pipeline must handle vector and raster figures alike. Figure 1
+            is an SVG diagram; Figure 2 is a PNG generated by a build script;
+            Figure 3 is another SVG. In the current prototype, SVGs are
+            rasterized at 2x resolution during emission.
+        </p>
+        <figure>
+            <img src="__BASE__images/figure-1.svg" alt="Pipeline overview diagram" width="360" />
+            <figcaption>Figure 1: The four-stage pagination pipeline.</figcaption>
+        </figure>
+        <figure>
+            <img src="__BASE__images/figure-2.png" alt="Bar chart of benchmark results" width="360" />
+            <figcaption>Figure 2: Relative throughput across eight benchmark runs.</figcaption>
+        </figure>
+        <figure>
+            <img src="__BASE__images/figure-3.svg" alt="Line chart of latency by payload size" width="380" />
+            <figcaption>Figure 3: Latency by payload size for two emitter variants.</figcaption>
+        </figure>
+
+        <h2 id="sec-discussion">Discussion</h2>
+        <p>
+            Several approximations remain. Text baselines are derived from
+            font metrics rather than the browser's internal line boxes, which
+            can shift glyphs by a fraction of a point. Link annotations are
+            not emitted at all, because the PDF writer used here cannot create
+            annotations. Backgrounds and borders are painted in document
+            order, a simplification of the CSS stacking model that suffices
+            for the table styles used in this report but would break on
+            overlapping content.
+        </p>
+        <p>
+            None of these limitations is fundamental. Baselines can be taken
+            from <code>getClientRects()</code> of per-character ranges during
+            a calibration pass; annotations can be added by post-processing
+            the PDF object graph; paint order can follow the CSS specification
+            more closely as needed.<span class="fn"
+                >Post-processing for annotations is already how several
+                server-side HTML-to-PDF tools add metadata.</span
+            >
+        </p>
+
+        <h2 id="sec-conclusion">Conclusion</h2>
+        <p>
+            A browser-only pipeline — paginate with CSS Paged Media, then
+            re-render the measured layout as PDF — produces automatable,
+            deterministic, fully vector documents without server round-trips
+            or print dialogs. The prototype documented here handles headers,
+            footers, footnotes, cross-page tables, and figures, and is a
+            viable foundation for production export in document-centric web
+            applications.
+        </p>
+
+        <h2 id="sec-refs">References</h2>
+        <ol class="bibliography">
+            <li>
+                W3C. <em>CSS Paged Media Module Level 3</em>. W3C Working
+                Draft, 2018.
+            </li>
+            <li>
+                Murakami, S. et al. <em>Vivliostyle: Open source, web browser
+                based typesetting engine</em>. vivliostyle.org, 2016–2025.
+            </li>
+            <li>
+                Dillon, H. <em>pdf-lib: Create and modify PDF documents in any
+                JavaScript environment</em>. pdf-lib.js.org, 2019–2021.
+            </li>
+            <li>
+                The Libertinus Project Authors. <em>Libertinus Serif</em>.
+                SIL Open Font License 1.1, 2025.
+            </li>
+            <li>
+                ISO 32000-2:2020. <em>Document management — Portable document
+                format — Part 2: PDF 2.0</em>. International Organization for
+                Standardization, 2020.
+            </li>
+        </ol>
+    </body>
+</html>

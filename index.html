@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Vivliostyle → PDF prototype</title>
+        <style>
+            body {
+                font-family: system-ui, sans-serif;
+                max-width: 46rem;
+                margin: 2rem auto;
+                padding: 0 1rem;
+                line-height: 1.5;
+                color: #222;
+            }
+            h1 {
+                font-size: 1.5rem;
+            }
+            button {
+                font-size: 1rem;
+                padding: 0.6rem 1.2rem;
+                border: 0;
+                border-radius: 6px;
+                background: #2456a6;
+                color: #fff;
+                cursor: pointer;
+            }
+            button:disabled {
+                opacity: 0.5;
+                cursor: wait;
+            }
+            #status {
+                margin-top: 1rem;
+                padding: 0.75rem 1rem;
+                background: #f4f4f4;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                min-height: 4rem;
+                max-height: 14rem;
+                overflow-y: auto;
+                font-family: ui-monospace, monospace;
+                font-size: 0.85rem;
+                white-space: pre-wrap;
+            }
+            #status:empty::before {
+                content: "Status messages will appear here.";
+                color: #999;
+            }
+            #status .error {
+                color: #b00020;
+                font-weight: 600;
+            }
+            .note {
+                background: #eef5ff;
+                border-left: 4px solid #2456a6;
+                padding: 0.5rem 1rem;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Browser-only PDF export prototype</h1>
+        <p>
+            This page is a technical prototype for producing a real vector PDF
+            entirely in the browser, without the browser print dialog:
+        </p>
+        <ol>
+            <li>
+                <a href="https://vivliostyle.org/">vivliostyle</a> paginates an
+                HTML/CSS Paged Media document inside a hidden iframe.
+            </li>
+            <li>
+                A custom DOM→PDF emitter walks the paginated output (measured
+                text positions, fonts, images, backgrounds, borders) and
+                re-renders it with
+                <a href="https://pdf-lib.js.org/">pdf-lib</a>.
+            </li>
+            <li>The resulting PDF bytes are downloaded as a file.</li>
+        </ol>
+        <p class="note">
+            Everything runs client-side. No server is involved after the page
+            has loaded, and no print dialog is opened.
+        </p>
+        <p>
+            <button id="generate" type="button">Generate PDF</button>
+        </p>
+        <div id="status" role="log" aria-live="polite"></div>
+        <script type="module" src="/src/main.ts"></script>
+    </body>
+</html>

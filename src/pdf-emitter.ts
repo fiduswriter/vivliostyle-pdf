@@ -477,7 +477,7 @@ async function emitPage(
             width: pageWidthPt,
             height: pageHeightPt,
             markLength: Math.max(8, markOffsetPt - bleedPt),
-            offset: markOffsetPt
+            outer: markOffsetPt
         })
     }
 
@@ -517,38 +517,43 @@ interface CropMarkSpec {
     width: number
     height: number
     markLength: number
-    offset: number
+    /** distance from the trim edge to the outer end of the mark (media edge) */
+    outer: number
 }
 
 function drawCropMarks(page: PDFPage, spec: CropMarkSpec): void {
-    const {left, bottom, width, height, markLength, offset} = spec
+    const {left, bottom, width, height, markLength, outer} = spec
     const right = left + width
     const top = bottom + height
     const color = rgb(0, 0, 0)
-    const thickness = 0.24
-    const marks: Array<{start: {x: number; y: number}; end: {x: number; y: number}}> = []
+    const thickness = 0.5
+    const marks: Array<{
+        start: {x: number; y: number}
+        end: {x: number; y: number}
+    }> = []
 
-    // Corner crop marks (outside the trim box).
-    const out = offset + markLength
+    // Corner crop marks sit in the margin between trim box and media box,
+    // so they are visible on the full page but will be trimmed off.
+    const inner = outer - markLength
     // Bottom-left corner.
     marks.push(
-        {start: {x: left - out, y: bottom}, end: {x: left - offset, y: bottom}},
-        {start: {x: left, y: bottom - out}, end: {x: left, y: bottom - offset}}
+        {start: {x: left - outer, y: bottom}, end: {x: left - inner, y: bottom}},
+        {start: {x: left, y: bottom - outer}, end: {x: left, y: bottom - inner}}
     )
     // Bottom-right corner.
     marks.push(
-        {start: {x: right + offset, y: bottom}, end: {x: right + out, y: bottom}},
-        {start: {x: right, y: bottom - out}, end: {x: right, y: bottom - offset}}
+        {start: {x: right + inner, y: bottom}, end: {x: right + outer, y: bottom}},
+        {start: {x: right, y: bottom - outer}, end: {x: right, y: bottom - inner}}
     )
     // Top-left corner.
     marks.push(
-        {start: {x: left - out, y: top}, end: {x: left - offset, y: top}},
-        {start: {x: left, y: top + offset}, end: {x: left, y: top + out}}
+        {start: {x: left - outer, y: top}, end: {x: left - inner, y: top}},
+        {start: {x: left, y: top + inner}, end: {x: left, y: top + outer}}
     )
     // Top-right corner.
     marks.push(
-        {start: {x: right + offset, y: top}, end: {x: right + out, y: top}},
-        {start: {x: right, y: top + offset}, end: {x: right, y: top + out}}
+        {start: {x: right + inner, y: top}, end: {x: right + outer, y: top}},
+        {start: {x: right, y: top + inner}, end: {x: right, y: top + outer}}
     )
 
     for (const {start, end} of marks) {

@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Technical prototype: browser-only PDF export via vivliostyle pagination + custom DOM-to-PDF emitter",
   "type": "module",
+  "packageManager": "pnpm@10.29.3",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

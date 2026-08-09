@@ -7,10 +7,20 @@ import {printHTML} from "@vivliostyle/print"
 import {emitPdfFromVivliostyleWindow} from "./pdf-emitter.js"
 import demoHtml from "./demo-document.html?raw"
 
-// Both elements are part of the static index.html; assert non-null.
+// Static index.html elements; assert non-null.
 const generateButton =
     document.querySelector<HTMLButtonElement>("#generate")!
 const statusArea = document.querySelector<HTMLDivElement>("#status")!
+const sourceArea = document.querySelector<HTMLTextAreaElement>("#source")!
+const cropMarksCheckbox =
+    document.querySelector<HTMLInputElement>("#crop-marks")!
+const trimBoxCheckbox = document.querySelector<HTMLInputElement>("#trim-box")!
+const bleedBoxCheckbox =
+    document.querySelector<HTMLInputElement>("#bleed-box")!
+const bleedMmInput = document.querySelector<HTMLInputElement>("#bleed-mm")!
+
+// Seed the editor with the demo source.
+sourceArea.value = demoHtml
 
 function setStatus(message: string, isError = false): void {
     const line = document.createElement("div")
@@ -42,12 +52,20 @@ function generate(): void {
 
     // The paginated document is loaded from a blob: URL inside the iframe,
     // and vivliostyle resolves relative resource URLs against that blob URL
-    // (it ignores <base>). To make fonts and images load, the demo document
+    // (it ignores <base>). To make fonts and images load, the source HTML
     // uses a __BASE__ placeholder that we expand to this app's absolute
     // deployment root.
     const baseHref = new URL(import.meta.env.BASE_URL, window.location.href)
         .href
-    const html = demoHtml.replaceAll("__BASE__", baseHref)
+    const html = sourceArea.value.replaceAll("__BASE__", baseHref)
+
+    const bleedMm = Math.max(0, parseFloat(bleedMmInput.value) || 0)
+    const printOptions = {
+        cropMarks: cropMarksCheckbox.checked,
+        trimBox: trimBoxCheckbox.checked,
+        bleedBox: bleedBoxCheckbox.checked,
+        bleedMm
+    }
 
     printHTML(html, {
         title: "Vivliostyle PDF Prototype Demo",
@@ -68,7 +86,7 @@ function generate(): void {
                     // The paginated iframe DOM does not retain the source
                     // <head>, so metadata is parsed from the raw source.
                     const sourceDoc = new DOMParser().parseFromString(
-                        demoHtml,
+                        sourceArea.value,
                         "text/html"
                     )
                     const metaContent = (name: string) =>
@@ -79,7 +97,7 @@ function generate(): void {
                         iframeWindow,
                         setStatus,
                         {
-                            sourceHtml: demoHtml,
+                            sourceHtml: sourceArea.value,
                             metadata: {
                                 title:
                                     sourceDoc
@@ -88,8 +106,10 @@ function generate(): void {
                                 author: metaContent("author"),
                                 subject: metaContent("description"),
                                 keywords: metaContent("keywords"),
-                                language: "en-US"
-                            }
+                                language:
+                                    sourceDoc.documentElement.lang || "en-US"
+                            },
+                            printOptions
                         }
                     )
                     downloadPdf(bytes, "demo.pdf")

@@ -29,6 +29,11 @@ import {
     rgb
 } from "@pdfme/pdf-lib"
 import type {PDFPage, RGB} from "@pdfme/pdf-lib"
+import {
+    concatTransformationMatrix,
+    popGraphicsState,
+    pushGraphicsState
+} from "./pdf-lib-ops.js"
 
 const PX_TO_PT = 0.75
 
@@ -132,12 +137,25 @@ export interface EmitMetadata {
     language?: string
 }
 
+export interface PrintOptions {
+    /** Draw registration/crop marks around each page. */
+    cropMarks?: boolean
+    /** Include a PDF TrimBox matching the final page size. */
+    trimBox?: boolean
+    /** Include a PDF BleedBox enlarged by bleedMm on every side. */
+    bleedBox?: boolean
+    /** Bleed margin in millimetres (default 3). */
+    bleedMm?: number
+}
+
 /** Optional extras for emitPdfFromVivliostyleWindow. */
 export interface EmitOptions {
     /** The document's HTML source, embedded as a file attachment. */
     sourceHtml?: string
     /** Document metadata from the original HTML head. */
     metadata?: EmitMetadata
+    /** Print-production options (crop marks, trim/bleed boxes). */
+    printOptions?: PrintOptions
 }
 
 /**
@@ -196,9 +214,22 @@ export async function emitPdfFromVivliostyleWindow(
     const anchorTargets = new Map<string, AnchorTarget>()
     const headings: CollectedHeading[] = []
 
+    const printOptions: Required<PrintOptions> = {
+        cropMarks: options?.printOptions?.cropMarks ?? false,
+        trimBox: options?.printOptions?.trimBox ?? false,
+        bleedBox: options?.printOptions?.bleedBox ?? false,
+        bleedMm: Math.max(0, options?.printOptions?.bleedMm ?? 3)
+    }
+
     for (const [index, container] of pageContainers.entries()) {
         onProgress?.(`Emitting page ${index + 1} of ${pageContainers.length}…`)
-        const {pageHeightPt} = await emitPage(win, pdfDoc, container, fonts)
+        const {pageHeightPt} = await emitPage(
+            win,
+            pdfDoc,
+            container,
+            fonts,
+            printOptions
+        )
         collectAnchorTargets(
             win,
             container,
@@ -315,11 +346,14 @@ function resolveFont(
     return {pdfFont: cut.pdfFont, metrics: cut.metrics}
 }
 
+const MM_TO_PT = 2.83464567
+
 async function emitPage(
     win: Window,
     pdfDoc: PDFDocument,
     container: HTMLElement,
-    fonts: Record<string, LoadedFamily>
+    fonts: Record<string, LoadedFamily>,
+    printOptions: Required<PrintOptions>
 ): Promise<{pageHeightPt: number}> {
     const containerRect = container.getBoundingClientRect()
     const pageWidthPt = containerRect.width * PX_TO_PT
@@ -329,7 +363,23 @@ async function emitPage(
             "Page container has zero size — cannot measure paginated layout"
         )
     }
-    const page = pdfDoc.addPage([pageWidthPt, pageHeightPt])
+
+    const bleedPt = printOptions.bleedBox
+        ? printOptions.bleedMm * MM_TO_PT
+        : 0
+    const markOffsetPt = printOptions.cropMarks ? Math.max(bleedPt, 9) : 0
+    const totalWidthPt = pageWidthPt + markOffsetPt * 2
+    const totalHeightPt = pageHeightPt + markOffsetPt * 2
+
+    const page = pdfDoc.addPage([totalWidthPt, totalHeightPt])
+
+    // Translate page content so the original (0,0) sits at the offset point.
+    const originX = markOffsetPt
+    const originY = markOffsetPt
+    page.pushOperators(
+        pushGraphicsState(),
+        concatTransformationMatrix(1, 0, 0, 1, originX, originY)
+    )
 
     /** Convert a DOM rect (relative to container, px) to PDF coords. */
     const toPdf = (x: number, y: number, height: number) => ({
@@ -399,7 +449,111 @@ async function emitPage(
             })
         }
     }
+
+    // Restore the original (untranslated) graphics state before drawing marks
+    // or setting page boxes, so those refer to the full media box.
+    page.pushOperators(popGraphicsState())
+
+    if (printOptions.trimBox || printOptions.bleedBox) {
+        setPageBoxes(page, {
+            trim: printOptions.trimBox
+                ? {x: originX, y: originY, width: pageWidthPt, height: pageHeightPt}
+                : undefined,
+            bleed: printOptions.bleedBox
+                ? {
+                      x: originX - bleedPt,
+                      y: originY - bleedPt,
+                      width: pageWidthPt + bleedPt * 2,
+                      height: pageHeightPt + bleedPt * 2
+                  }
+                : undefined
+        })
+    }
+
+    if (printOptions.cropMarks) {
+        drawCropMarks(page, {
+            left: originX,
+            bottom: originY,
+            width: pageWidthPt,
+            height: pageHeightPt,
+            markLength: Math.max(8, markOffsetPt - bleedPt),
+            offset: markOffsetPt
+        })
+    }
+
     return {pageHeightPt}
+}
+
+interface Box {
+    x: number
+    y: number
+    width: number
+    height: number
+}
+
+function setPageBoxes(
+    page: PDFPage,
+    boxes: {trim?: Box; bleed?: Box}
+): void {
+    const context = page.node.context
+    const arrayFor = (box: Box) =>
+        context.obj([
+            box.x,
+            box.y,
+            box.x + box.width,
+            box.y + box.height
+        ])
+    if (boxes.trim) {
+        page.node.set(PDFName.of("TrimBox"), arrayFor(boxes.trim))
+    }
+    if (boxes.bleed) {
+        page.node.set(PDFName.of("BleedBox"), arrayFor(boxes.bleed))
+    }
+}
+
+interface CropMarkSpec {
+    left: number
+    bottom: number
+    width: number
+    height: number
+    markLength: number
+    offset: number
+}
+
+function drawCropMarks(page: PDFPage, spec: CropMarkSpec): void {
+    const {left, bottom, width, height, markLength, offset} = spec
+    const right = left + width
+    const top = bottom + height
+    const color = rgb(0, 0, 0)
+    const thickness = 0.24
+    const marks: Array<{start: {x: number; y: number}; end: {x: number; y: number}}> = []
+
+    // Corner crop marks (outside the trim box).
+    const out = offset + markLength
+    // Bottom-left corner.
+    marks.push(
+        {start: {x: left - out, y: bottom}, end: {x: left - offset, y: bottom}},
+        {start: {x: left, y: bottom - out}, end: {x: left, y: bottom - offset}}
+    )
+    // Bottom-right corner.
+    marks.push(
+        {start: {x: right + offset, y: bottom}, end: {x: right + out, y: bottom}},
+        {start: {x: right, y: bottom - out}, end: {x: right, y: bottom - offset}}
+    )
+    // Top-left corner.
+    marks.push(
+        {start: {x: left - out, y: top}, end: {x: left - offset, y: top}},
+        {start: {x: left, y: top + offset}, end: {x: left, y: top + out}}
+    )
+    // Top-right corner.
+    marks.push(
+        {start: {x: right + offset, y: top}, end: {x: right + out, y: top}},
+        {start: {x: right, y: top + offset}, end: {x: right, y: top + out}}
+    )
+
+    for (const {start, end} of marks) {
+        page.drawLine({start, end, thickness, color})
+    }
 }
 
 /* ---- Link annotations ----------------------------------------------

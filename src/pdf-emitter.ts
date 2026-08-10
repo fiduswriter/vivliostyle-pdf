@@ -1527,6 +1527,16 @@ function collectWords(
  * bullet types; markers are drawn right-aligned just left of the item's
  * content box.
  */
+/**
+ * Synthesize runs for list markers. `::marker` pseudo-boxes have no DOM text
+ * node, so word collection never sees them; we approximate them here using
+ * the item's computed style and its `::marker` pseudo-element style (color,
+ * font, custom `content`, and `list-style-position`).
+ *
+ * Note: `list-style-image` is not detectable — Chromium does not expose it in
+ * computed style (getComputedStyle returns ""), so image markers are not
+ * reproduced.
+ */
 function collectListMarkers(
     win: Window,
     container: HTMLElement,
@@ -1539,6 +1549,14 @@ function collectListMarkers(
         if (style.display !== "list-item") {
             continue
         }
+        let markerStyle: CSSStyleDeclaration | null = null
+        try {
+            markerStyle = win.getComputedStyle(el, "::marker")
+        } catch {
+            markerStyle = null
+        }
+        const markerStyleOrDefault = markerStyle ?? style
+
         // Ordinal = position among preceding list-item siblings.
         const ordinal = (): number => {
             let n = 1
@@ -1554,50 +1572,67 @@ function collectListMarkers(
             }
             return n
         }
-        const listStyle = style.listStyleType
-        const marker = markerForListStyle(
-            listStyle,
-            () => ordinal(),
-            () => bulletDepth(el)
-        )
-        if (!marker) {
-            continue
-        }
+
         const rect = el.getBoundingClientRect()
         if (rect.width === 0 || rect.height === 0) {
             continue
         }
-        const fontSizePx = parseFloat(style.fontSize)
+        const inside = style.listStylePosition === "inside"
+        const fontSizePx = parseFloat(markerStyleOrDefault.fontSize) || parseFloat(style.fontSize)
         const fontKey = resolveRunFontKey(
             ctx,
-            style.fontFamily,
-            style.fontWeight,
-            style.fontStyle
+            markerStyleOrDefault.fontFamily,
+            markerStyleOrDefault.fontWeight,
+            markerStyleOrDefault.fontStyle
         )
         const font = ctx.byKey.get(fontKey)?.pdfFont
         if (!font) {
             continue
         }
-        // Right-align the marker ending 0.4em left of the item's box.
+        const color = parseCssColor(markerStyleOrDefault.color)?.rgb ?? rgb(0, 0, 0)
+        const gapPx = 0.4 * fontSizePx
+
+        const borderLeftPx = parseFloat(style.borderLeftWidth) || 0
+        const paddingLeftPx = parseFloat(style.paddingLeft) || 0
+        const boxLeftPx = rect.left - containerRect.left
+        const contentXInsidePx = boxLeftPx + borderLeftPx + paddingLeftPx
+        const yTopPx =
+            rect.top - containerRect.top + (parseFloat(style.paddingTop) || 0)
+
+        // Custom ::marker content (other than the defaults) replaces the
+        // synthesized marker text.
+        const contentProp = markerStyleOrDefault.content
+        let markerText: string | null = null
+        if (contentProp && contentProp !== "normal" && contentProp !== "none") {
+            markerText = contentProp.replace(/^["']|["']$/g, "")
+        } else {
+            markerText = markerForListStyle(
+                style.listStyleType,
+                () => ordinal(),
+                () => bulletDepth(el)
+            )
+        }
+
+        if (!markerText) {
+            continue
+        }
         const markerWidthPx =
-            (font.widthOfTextAtSize(marker, fontSizePx * PX_TO_PT) /
-                PX_TO_PT)
-        const x =
-            rect.left -
-            containerRect.left -
-            markerWidthPx -
-            0.4 * fontSizePx
-        const yTop = rect.top - containerRect.top + parseFloat(style.paddingTop || "0")
+            (font.widthOfTextAtSize(markerText, fontSizePx * PX_TO_PT) /
+                PX_TO_PT
+            )
+        const x = inside
+            ? contentXInsidePx
+            : boxLeftPx - markerWidthPx - gapPx
         runs.push({
-            text: marker,
+            text: markerText,
             x,
-            yTop,
+            yTop: yTopPx,
             // Approximate the first line's em box: font size plus a bit.
-            yBottom: yTop + fontSizePx * 1.2,
+            yBottom: yTopPx + fontSizePx * 1.2,
             width: markerWidthPx,
             fontSizePx,
             fontKey,
-            color: parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0),
+            color,
             decoration: {underline: null, overline: null, lineThrough: null},
             smallCaps: false
         })

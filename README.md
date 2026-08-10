@@ -100,6 +100,9 @@ test/font-formats.spec.ts   node tests for font sniffing + WOFF round-trip
 test/bidi.spec.ts           node tests for the bidi-run splitter
 test/rtl.spec.ts            RTL/bidi end-to-end (positions, mixed runs)
 test/decor.spec.ts          text-decoration + border-style breadth vector ops
+test/markers.spec.ts        list-marker fidelity (inside/outside, ::marker)
+test/outline.spec.ts        outline h1–h6 nesting
+test/adapt-template.spec.ts fidus -adapt-template footnote verification
 .github/workflows/pages.yml GitHub Pages deployment
 ```
 
@@ -239,17 +242,16 @@ Because the emitter writes the PDF itself, it can add structures that
 
 ## Next steps
 
-- Calibrate baselines per line (per-character range pass) instead of the
-  descent heuristic.
+- Calibrate sup/sub baselines per line (per-character range pass) instead of
+  the descent heuristic.
 - Border-radius on bordered boxes (backgrounds are rounded already); groove/
-  ridge/inset/outset border styles; box-shadow/text-shadow/outline.
+  ridge/inset/outset border styles; box-shadow/text-shadow/outline;
+  `list-style-image` is not detectable (Chromium computed-style limitation).
 - Math via MathLive/SVG (inline + display equations) instead of native MathML
   token copying.
 - Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks
   them), WOFF2 embedding, `unicode-range`, `size-adjust`/descent-override
   descriptors, OpenType feature control.
-- Outline h4–h6, list-marker fidelity, and the Fidus `-adapt-template`
-  footnote-path verification harness.
 - Keep SVGs vector (@pdfme/pdf-lib `page.drawSvg()` drops `<marker>` arrowheads
   and sizes `<text>` with fallback metrics today) and follow the CSS paint-order
   spec for overlapping content.

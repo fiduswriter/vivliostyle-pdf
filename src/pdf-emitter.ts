@@ -1363,6 +1363,7 @@ async function paintImages(
                 drawSvg(page, svgText, pos.x, pos.y, {
                     width: widthPt,
                     height: heightPt,
+                    preserveAspectRatio: getSvgPreserveAspectRatio(svgText),
                     fontCallback: (family, bold, italic) =>
                         resolveSvgFont(fonts, family, bold, italic)
                 })
@@ -1396,6 +1397,15 @@ function isSvg(src: string, bytes: Uint8Array, contentType?: string | null): boo
     if (lowerSrc.endsWith(".svg") || lowerSrc.includes(".svg?") || lowerSrc.includes(".svg#")) return true
     const head = new TextDecoder().decode(bytes.subarray(0, 1024)).trimStart()
     return head.startsWith("<?xml") || head.startsWith("<svg") || head.includes("<svg")
+}
+
+/** Extract the SVG root's preserveAspectRatio value, defaulting to CSS-like meet. */
+function getSvgPreserveAspectRatio(svgText: string): string {
+    const match = svgText.match(
+        /<svg[^>]*\spreserveAspectRatio=["']([^"']+)["'][^>]*>/i
+    )
+    const value = match?.[1].trim()
+    return value || "xMidYMid meet"
 }
 
 /** Map an SVG font-family request to one of our embedded fonts. */

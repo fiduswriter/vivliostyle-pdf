@@ -247,6 +247,13 @@
                 color: #444;
                 margin-top: 3pt;
             }
+            /* A Fidus-style caption carries its category label ("Figure N")
+               in a leading <label> element; keep the label upright/bold so it
+               stands apart from the italic caption paragraph. */
+            figcaption label {
+                font-style: normal;
+                font-weight: bold;
+            }
 
             /* ---- Footnotes ---- */
             span.fn {
@@ -662,7 +669,9 @@
             another SVG. SVGs are rasterized at 2x resolution during
             emission; keeping them vector via the fork's
             <code>drawSvg()</code> was attempted, but it drops arrow markers
-            and mis-sizes text labels, so raster stays for now.
+            and mis-sizes text labels, so raster stays for now
+            (<a class="xref" href="#fig-4">Figure 4</a> below uses the
+            Fidus-style caption with a leading <code>&lt;label&gt;</code>).
         </p>
         <figure id="fig-1">
             <img src="__BASE__images/figure-1.svg" alt="Pipeline overview diagram" width="360" />
@@ -675,6 +684,21 @@
         <figure id="fig-3">
             <img src="__BASE__images/figure-3.svg" alt="Line chart of latency by payload size" width="380" />
             <figcaption>Figure 3: Latency by payload size for two emitter variants.</figcaption>
+        </figure>
+        <figure
+            id="fig-4"
+            class="aligned-center image-width-50"
+            data-aligned="center"
+            data-width="50"
+            data-category="figure"
+        >
+            <img src="__BASE__images/figure-2.png" alt="Benchmark chart with a Fidus-style labelled caption" width="360" />
+            <figcaption>
+                <label>Figure 4</label>
+                <p>A Fidus-style caption: the category label lives in its own
+                    <code>&lt;label&gt;</code> element and the caption body is a
+                    <code>&lt;p&gt;</code>.</p>
+            </figcaption>
         </figure>
 
         <h2 id="sec-typography">Typography, Direction &amp; Decoration</h2>

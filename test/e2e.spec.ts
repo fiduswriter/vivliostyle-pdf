@@ -341,6 +341,10 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
     expect(deep?.items?.[0]?.title).toContain("Level five heading")
     expect(deep?.items?.[0]?.items?.[0]?.title).toContain("Level six heading")
 
+    // 9c. Fidus-style figure: the <label> caption and its <p> body are emitted.
+    expect(allText).toContain("Figure 4")
+    expect(allText).toContain("A Fidus-style caption")
+
     // 10. The source HTML is embedded as an attachment. (pdfjs v6 returns a
     //     Map of FileSpec metadata here; content is fetched separately.)
     const atts = (await doc2.getAttachments()) as Map<

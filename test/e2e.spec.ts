@@ -327,6 +327,20 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
     const tabularDest = await resolveDestPageIndex(doc2, tabular!.dest)
     expect(tabularDest).toBe(pageContaining(pages, "Tabular Results", 2) - 1)
 
+    // 9b. New demo section: dynamic fonts, RTL and deep outline levels.
+    expect(allText).toContain("DejaVu Sans")
+    expect(allText).toContain("مرحبا بالعالم")
+    expect(allText).toContain("التقرير")
+    expect(flat.some(item => item.title.includes("Level five heading"))).toBe(
+        true
+    )
+    expect(flat.some(item => item.title.includes("Level six heading"))).toBe(
+        true
+    )
+    const deep = flat.find(item => item.title.includes("Deep outline levels"))
+    expect(deep?.items?.[0]?.title).toContain("Level five heading")
+    expect(deep?.items?.[0]?.items?.[0]?.title).toContain("Level six heading")
+
     // 10. The source HTML is embedded as an attachment. (pdfjs v6 returns a
     //     Map of FileSpec metadata here; content is fetched separately.)
     const atts = (await doc2.getAttachments()) as Map<

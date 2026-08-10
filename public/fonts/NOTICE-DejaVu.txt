@@ -1,0 +1,15 @@
+DejaVu Sans (SIL Open Font License 1.1)
+========================================
+
+DejaVu Sans-Regular.ttf is bundled (in public/fonts/) so the demo document and
+tests can showcase dynamic `@font-face` font discovery — a distinct, non-serif
+family that is picked up automatically by the emitter rather than mapped from
+a hardcoded registry.
+
+- DejaVu Sans — Copyright © 2003 Bitstream, Inc., with Reserved Font Names
+  "Bitstream Vera" and "Vera"; portions © 2004-2009 Tavmjong Bah and others.
+  Licensed under the SIL Open Font License, Version 1.1.
+
+Distributed by the Debian `fonts-dejavu-core` package
+(https://packages.debian.org/fonts-dejavu-core). The full OFL text is
+available at https://openfontlicense.org.

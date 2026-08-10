@@ -26,6 +26,7 @@ import {
     PDFFont,
     PDFRef,
     PDFString,
+    LineCapStyle,
     rgb
 } from "@pdfme/pdf-lib"
 import type {PDFPage, RGB} from "@pdfme/pdf-lib"
@@ -34,62 +35,37 @@ import {
     popGraphicsState,
     pushGraphicsState
 } from "./pdf-lib-ops.js"
+import {
+    collectFontFaceRules,
+    parseFontFamilyList,
+    selectFontFace,
+    type FontFaceDescriptor
+} from "./font-face.js"
+import {normalizeFontBytes, sfntTableSignature} from "./font-formats.js"
+import {splitBidiRuns} from "./bidi.js"
 
 const PX_TO_PT = 0.75
 
-/** A font family with up to four style/weight cuts. */
-interface FontFamilyConfig {
-    /** Substring matched against the computed font-family. */
-    familyMatch: RegExp
-    /** Fallback order if a requested cut is missing. */
-    fallbackOrder: FontCut[]
-    regular: string
-    bold?: string
-    italic?: string
-    boldItalic?: string
-}
-
 type FontCut = "regular" | "bold" | "italic" | "boldItalic"
 
-/** Font registry: drop TTFs into public/fonts/ and add a family here. */
-const FONT_FAMILIES: FontFamilyConfig[] = [
-    {
-        familyMatch: /mono/i,
-        fallbackOrder: ["regular"],
-        regular: "fonts/LibertinusMono-Regular.ttf"
-    },
-    {
-        familyMatch: /libertinus serif|serif/i,
-        fallbackOrder: ["regular", "italic", "bold", "boldItalic"],
+/** Bundled fallback fonts (used when no @font-face rule matches a run). */
+const FALLBACK_FONT_FILES: Record<string, Partial<Record<FontCut, string>>> = {
+    serif: {
         regular: "fonts/LibertinusSerif-Regular.ttf",
         bold: "fonts/LibertinusSerif-Bold.ttf",
         italic: "fonts/LibertinusSerif-Italic.ttf",
         boldItalic: "fonts/LibertinusSerif-BoldItalic.ttf"
+    },
+    monospace: {
+        regular: "fonts/LibertinusMono-Regular.ttf"
     }
-]
-
-/** Flattened map of all physical font files that need to be loaded. */
-const FONT_FILES: Record<string, string> = (() => {
-    const files: Record<string, string> = {}
-    for (const family of FONT_FAMILIES) {
-        const name = familyName(family)
-        for (const cut of family.fallbackOrder) {
-            const path = family[cut]
-            if (path) {
-                files[`${name}-${cut}`] = path
-            }
-        }
-    }
-    return files
-})()
-
-function familyName(family: FontFamilyConfig): string {
-    // Derive an internal key from the regex source (first capturing-like token).
-    const raw = family.familyMatch.source.replace(/[\\/\[\](){}|?*+^$]/g, "")
-    return raw || "family"
 }
 
-type FontVariant = string
+/** Cut fallback order per generic fallback family. */
+const FALLBACK_ORDER: Record<string, FontCut[]> = {
+    serif: ["regular", "italic", "bold", "boldItalic"],
+    monospace: ["regular"]
+}
 
 interface FontMetrics {
     /** ascent and descent in px for a given font size (from fontkit, em-scaled) */
@@ -97,15 +73,42 @@ interface FontMetrics {
     descent(sizePx: number): number
 }
 
+/** A font embedded into the PDF (from @font-face discovery or the fallback set). */
 interface LoadedFont {
     pdfFont: PDFFont
     metrics: FontMetrics
+    key: FontKey
 }
 
-interface FontRun {
-    /** Indices into FONT_FAMILIES and the selected weight/style cut. */
-    familyIndex: number
-    cut: FontCut
+/** Stable key identifying an embedded font file. */
+type FontKey = string
+
+/**
+ * Everything the emitter needs to resolve a text run's font: the discovered
+ * `@font-face` rules, the embedded font per rule, and the bundled fallbacks.
+ */
+interface FontSelectionContext {
+    rules: FontFaceDescriptor[]
+    /** embedded-font key per rule; only rules that loaded successfully are present. */
+    keyByRule: Map<FontFaceDescriptor, FontKey>
+    /** every embedded font (discovered + fallback), keyed by FontKey. */
+    byKey: Map<FontKey, LoadedFont>
+    /** bundled last-resort fonts per generic family (serif / monospace). */
+    fallback: Map<string, Partial<Record<FontCut, FontKey>>>
+}
+
+export type DecorationStyle = "solid" | "double" | "dotted" | "dashed" | "wavy"
+
+interface DecorationLine {
+    style: DecorationStyle
+    /** Color from `text-decoration-color`, or null to inherit the text color. */
+    color: RGB | null
+}
+
+interface TextDecoration {
+    underline: DecorationLine | null
+    overline: DecorationLine | null
+    lineThrough: DecorationLine | null
 }
 
 interface WordRun {
@@ -116,12 +119,9 @@ interface WordRun {
     yBottom: number
     width: number
     fontSizePx: number
-    variant: FontRun
+    fontKey: FontKey
     color: RGB
-    /** draw a strike line through this run (text-decoration: line-through) */
-    lineThrough: boolean
-    /** draw an underline below this run (text-decoration: underline) */
-    underline: boolean
+    decoration: TextDecoration
     /** synthesize small caps: lowercase drawn as uppercase at reduced size */
     smallCaps: boolean
 }
@@ -207,7 +207,11 @@ export async function emitPdfFromVivliostyleWindow(
     )
 
     onProgress?.("Loading fonts…")
-    const fonts = await loadFonts(pdfDoc)
+    const fonts = await loadFontSelectionContext(
+        pdfDoc,
+        win,
+        options?.sourceHtml
+    )
 
     // Link collection runs alongside page emission. Internal (#id) links
     // need their target's page, which may come later — so anchor targets
@@ -294,76 +298,246 @@ function isEmptyPage(container: HTMLElement): boolean {
     return text.trim().length === 0
 }
 
-interface LoadedCut extends LoadedFont {
-    cut: FontCut
-}
+/**
+ * Discover `@font-face` rules (from the paginated document, or — when the
+ * iframe did not retain them — from the source HTML), fetch each unique font
+ * file, normalize it to embeddable sfnt bytes (WOFF unwrapped; WOFF2 skipped
+ * with a warning) and embed it subsetted. The bundled fallback fonts are
+ * embedded too, deduplicated against the discovered ones by content hash.
+ */
+async function loadFontSelectionContext(
+    pdfDoc: PDFDocument,
+    win: Window,
+    sourceHtml: string | undefined
+): Promise<FontSelectionContext> {
+    const base = new URL(import.meta.env.BASE_URL, window.location.href).href
+    const rules = collectFontFaceRules(win.document, win.document.baseURI)
+    const allRules =
+        rules.length > 0
+            ? rules
+            : collectFontFaceRules(parseSourceDocument(sourceHtml), base)
 
-interface LoadedFamily {
-    family: FontFamilyConfig
-    cuts: Map<FontCut, LoadedCut>
-}
+    const byKey = new Map<FontKey, LoadedFont>()
+    const semanticToKey = new Map<string, FontKey>()
+    const keyByRule = new Map<FontFaceDescriptor, FontKey>()
 
-/** Fetch the configured TTF files, embed them (subset) and expose fontkit metrics. */
-async function loadFonts(
-    pdfDoc: PDFDocument
-): Promise<Record<FontVariant, LoadedFamily>> {
-    const base = new URL(import.meta.env.BASE_URL, window.location.href)
-    const pdfFonts = new Map<string, PDFFont>()
-    const metricsByPath = new Map<string, FontMetrics>()
-
-    // Load each physical file once.
-    await Promise.all(
-        Object.entries(FONT_FILES).map(async ([_key, path]) => {
-            const res = await fetch(new URL(path, base))
-            if (!res.ok) {
-                throw new Error(`Failed to fetch font ${path}: ${res.status}`)
-            }
-            const bytes = new Uint8Array(await res.arrayBuffer())
-            pdfFonts.set(path, await pdfDoc.embedFont(bytes, {subset: true}))
-            const fkFont = fontkit.create(bytes)
-            const unitsPerEm = fkFont.unitsPerEm
-            metricsByPath.set(path, {
+    const embedBytes = async (
+        bytes: Uint8Array
+    ): Promise<{key: FontKey} | {reason: string}> => {
+        const normalized = await normalizeFontBytes(bytes)
+        if (!normalized.ok) {
+            return {reason: normalized.reason}
+        }
+        const fkFont = fontkit.create(normalized.bytes)
+        // Dedup by *content* (postscript name + table directory), not byte
+        // layout: a WOFF unwrapped to sfnt differs physically from the same
+        // font as a TTF but must still map to one embedded program.
+        const signature = sfntTableSignature(normalized.bytes)
+        const postscriptName = (
+            fkFont as unknown as {postscriptName?: string}
+        ).postscriptName
+        const semanticKey = `${postscriptName ?? ""}|${signature}`
+        const hash = fnv1a(semanticKey)
+        const existing = semanticToKey.get(semanticKey)
+        if (existing) {
+            return {key: existing}
+        }
+        const key = `font:${hash}`
+        const pdfFont = await pdfDoc.embedFont(normalized.bytes, {
+            subset: true
+        })
+        const unitsPerEm = fkFont.unitsPerEm
+        byKey.set(key, {
+            key,
+            pdfFont,
+            metrics: {
                 ascent: sizePx => (fkFont.ascent / unitsPerEm) * sizePx,
                 descent: sizePx =>
                     (Math.abs(fkFont.descent) / unitsPerEm) * sizePx
-            })
+            }
         })
-    )
+        semanticToKey.set(semanticKey, key)
+        return {key}
+    }
 
-    // Build per-family lookup tables.
-    const families: Record<string, LoadedFamily> = {}
-    for (const family of FONT_FAMILIES) {
-        const name = familyName(family)
-        const cuts = new Map<FontCut, LoadedCut>()
-        for (const cut of family.fallbackOrder) {
-            const path = family[cut]
-            if (!path) continue
-            const pdfFont = pdfFonts.get(path)
-            const metrics = metricsByPath.get(path)
-            if (pdfFont && metrics) {
-                cuts.set(cut, {pdfFont, metrics, cut})
+    const loadSrc = async (srcUrl: string): Promise<FontKey | null> => {
+        let bytes: Uint8Array | null = null
+        if (srcUrl.startsWith("data:")) {
+            bytes = decodeDataUri(srcUrl)
+        } else {
+            try {
+                const response = await fetch(srcUrl)
+                if (response.ok) {
+                    bytes = new Uint8Array(await response.arrayBuffer())
+                }
+            } catch {
+                // Unfetchable font (CORS etc.); try the next src.
             }
         }
-        families[name] = {family, cuts}
+        if (!bytes) {
+            return null
+        }
+        const result = await embedBytes(bytes)
+        if ("reason" in result) {
+            console.warn(`vivliostyle-pdf: skipping font src ${srcUrl} (${result.reason})`)
+            return null
+        }
+        return result.key
     }
-    return families
-}
 
-function resolveFont(
-    family: LoadedFamily,
-    requestedCut: FontCut
-): LoadedFont {
-    const cut =
-        family.cuts.get(requestedCut) ??
-        family.family.fallbackOrder
-            .map(c => family.cuts.get(c))
-            .find(Boolean)
-    if (!cut) {
-        throw new Error(
-            `Font family has no usable cut: ${family.family.familyMatch.source}`
+    for (const rule of allRules) {
+        if (keyByRule.has(rule)) {
+            continue
+        }
+        for (const src of rule.srcs) {
+            const key = await loadSrc(src.url)
+            if (key) {
+                keyByRule.set(rule, key)
+                break
+            }
+        }
+    }
+
+    // Bundled fallbacks — deduplicated against discovered fonts by content.
+    const fallback = new Map<string, Partial<Record<FontCut, FontKey>>>()
+    for (const [generic, cuts] of Object.entries(FALLBACK_FONT_FILES)) {
+        const keyedCuts: Partial<Record<FontCut, FontKey>> = {}
+        for (const [cut, path] of Object.entries(cuts)) {
+            const response = await fetch(new URL(path, base))
+            if (!response.ok) {
+                throw new Error(
+                    `Failed to fetch fallback font ${path}: ${response.status}`
+                )
+            }
+            const bytes = new Uint8Array(await response.arrayBuffer())
+            const result = await embedBytes(bytes)
+            if ("reason" in result) {
+                throw new Error(
+                    `Failed to embed fallback font ${path}: ${result.reason}`
+                )
+            }
+            keyedCuts[cut as FontCut] = result.key
+        }
+        fallback.set(generic, keyedCuts)
+    }
+
+    if (allRules.length === 0) {
+        console.warn(
+            "vivliostyle-pdf: no @font-face rules found; using bundled fallback fonts only"
         )
     }
-    return {pdfFont: cut.pdfFont, metrics: cut.metrics}
+    if (keyByRule.size === 0 && allRules.length > 0) {
+        console.warn(
+            "vivliostyle-pdf: none of the document's @font-face fonts could be embedded; falling back to bundled fonts"
+        )
+    }
+
+    return {rules: allRules, keyByRule, byKey, fallback}
+}
+
+/** Parse the (pre-pagination) source HTML so its <style> @font-face rules
+    can be enumerated when the iframe document dropped them. */
+function parseSourceDocument(
+    sourceHtml: string | undefined
+): Document {
+    const expanded = (sourceHtml ?? "").replaceAll(
+        "__BASE__",
+        import.meta.env.BASE_URL
+    )
+    return new DOMParser().parseFromString(expanded, "text/html")
+}
+
+function decodeDataUri(uri: string): Uint8Array | null {
+    const match = uri.match(/^data:([^,]*)?,(.*)$/s)
+    if (!match) {
+        return null
+    }
+    const meta = match[1] ?? ""
+    const payload = match[2]
+    if (meta.includes(";base64")) {
+        try {
+            const binary = atob(payload)
+            const out = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) {
+                out[i] = binary.charCodeAt(i)
+            }
+            return out
+        } catch {
+            return null
+        }
+    }
+    try {
+        const decoded = decodeURIComponent(payload)
+        return new Uint8Array([...decoded].map(c => c.charCodeAt(0)))
+    } catch {
+        return new Uint8Array([...payload].map(c => c.charCodeAt(0)))
+    }
+}
+
+/** FNV-1a over a string — used only to name deduped font keys. */
+function fnv1a(input: string): string {
+    let hash = 2166136261
+    for (let i = 0; i < input.length; i++) {
+        hash ^= input.charCodeAt(i)
+        hash = Math.imul(hash, 16777619)
+    }
+    return (hash >>> 0).toString(36)
+}
+
+/**
+ * Resolve which embedded font to draw a text run in, using CSS font matching
+ * over the discovered `@font-face` rules and falling back to the bundled
+ * fonts when nothing matches (or the matching font failed to embed).
+ */
+function resolveRunFontKey(
+    ctx: FontSelectionContext,
+    fontFamily: string,
+    fontWeight: string,
+    fontStyle: string
+): FontKey {
+    const familyList = parseFontFamilyList(fontFamily)
+    const weight = Number.parseFloat(fontWeight)
+    const face = selectFontFace(
+        ctx.rules,
+        familyList,
+        Number.isNaN(weight) ? 400 : weight,
+        fontStyle
+    )
+    if (face) {
+        const key = ctx.keyByRule.get(face)
+        if (key) {
+            return key
+        }
+    }
+    const isMono = familyList.some(family => /mono/i.test(family))
+    const generic = isMono ? "monospace" : "serif"
+    const italic = fontStyle === "italic" || fontStyle === "oblique"
+    const bold = Number.isNaN(weight)
+        ? fontWeight === "bold"
+        : weight >= 600
+    const requestedCut: FontCut =
+        bold && italic
+            ? "boldItalic"
+            : bold
+              ? "bold"
+              : italic
+                ? "italic"
+                : "regular"
+    const cutOrder = [
+        requestedCut,
+        ...FALLBACK_ORDER[generic].filter(cut => cut !== requestedCut)
+    ]
+    const cuts = ctx.fallback.get(generic)
+    if (!cuts) {
+        throw new Error(`No fallback font family: ${generic}`)
+    }
+    for (const candidate of cutOrder) {
+        const key = cuts[candidate]
+        if (key) {
+            return key
+        }
+    }
+    throw new Error("No fallback font available")
 }
 
 const MM_TO_PT = 2.83464567
@@ -372,7 +546,7 @@ async function emitPage(
     win: Window,
     pdfDoc: PDFDocument,
     container: HTMLElement,
-    fonts: Record<string, LoadedFamily>,
+    fonts: FontSelectionContext,
     printOptions: Required<PrintOptions>
 ): Promise<{pageHeightPt: number; originX: number; originY: number}> {
     const containerRect = container.getBoundingClientRect()
@@ -418,7 +592,10 @@ async function emitPage(
     // ::marker pseudo-boxes have no text nodes; synthesize them separately.
     words.push(...collectListMarkers(win, container, containerRect, fonts))
     for (const word of words) {
-        const font = resolveFont(fonts[familyName(FONT_FAMILIES[word.variant.familyIndex])], word.variant.cut)
+        const font = fonts.byKey.get(word.fontKey)
+        if (!font) {
+            continue
+        }
         const sizePt = word.fontSizePx * PX_TO_PT
         // Baseline approximation: the range rect roughly spans ascent..descent
         // of the text, so the baseline sits `descent` above the rect bottom.
@@ -447,26 +624,12 @@ async function emitPage(
                 color: word.color
             })
         }
-        if (word.lineThrough) {
-            // Strike line at roughly mid x-height above the baseline.
-            const strikeY = baselineY + sizePt * 0.3
-            page.drawLine({
-                start: {x: xPt, y: strikeY},
-                end: {x: xPt + word.width * PX_TO_PT, y: strikeY},
-                thickness: Math.max(0.4, sizePt / 18),
-                color: word.color
-            })
-        }
-        if (word.underline) {
-            // Underline just below the baseline, matching common UA style.
-            const underlineOffset = Math.max(0.5, sizePt * 0.09)
-            const underlineY = baselineY - underlineOffset
-            page.drawLine({
-                start: {x: xPt, y: underlineY},
-                end: {x: xPt + word.width * PX_TO_PT, y: underlineY},
-                thickness: Math.max(0.4, sizePt / 16),
-                color: word.color
-            })
+        if (
+            word.decoration.lineThrough ||
+            word.decoration.overline ||
+            word.decoration.underline
+        ) {
+            drawWordDecorations(page, word, xPt, baselineY, sizePt)
         }
     }
 
@@ -794,7 +957,7 @@ interface CollectedHeading {
     yTopPt: number
 }
 
-/** Record h1–h3 headings (with their generated section numbers) per page. */
+/** Record h1–h6 headings (with their generated section numbers) per page. */
 function collectHeadings(
     container: HTMLElement,
     pageHeightPt: number,
@@ -804,7 +967,7 @@ function collectHeadings(
 ): void {
     const containerRect = container.getBoundingClientRect()
     for (const el of Array.from(
-        container.querySelectorAll<HTMLElement>("h1, h2, h3")
+        container.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")
     )) {
         const rect = el.getBoundingClientRect()
         if (rect.width === 0 || rect.height === 0) {
@@ -977,11 +1140,17 @@ function paintBackgrounds(
     toPdf: ToPdfFn
 ): void {
     for (const el of walkElements(win, container)) {
-        const bg = win.getComputedStyle(el).backgroundColor
+        const style = win.getComputedStyle(el)
+        const bg = style.backgroundColor
         const color = parseCssColor(bg)
         if (!color || color.alpha === 0) {
             continue
         }
+        const radiusPx = Math.min(
+            parseLengthPx(style.borderTopLeftRadius),
+            parseLengthPx(style.borderTopRightRadius)
+        )
+        const radiusPt = radiusPx * PX_TO_PT
         for (const rect of Array.from(el.getClientRects())) {
             const x = rect.left - containerRect.left
             const y = rect.top - containerRect.top
@@ -991,13 +1160,31 @@ function paintBackgrounds(
                 y: pos.y,
                 width: rect.width * PX_TO_PT,
                 height: rect.height * PX_TO_PT,
-                color: color.rgb
+                color: color.rgb,
+                radius: radiusPt
             })
         }
     }
 }
 
-/** Draw simple solid borders (each edge as a filled rect of the border width). */
+/** Parse a length like "3px"/"1pt" into a px number (0 when none). */
+function parseLengthPx(value: string): number {
+    const match = value.match(/([\d.]+)(px|pt|em|mm|cm)?/)
+    if (!match) {
+        return 0
+    }
+    const number = Number(match[1])
+    const unit = match[2]
+    if (unit === "px") return number
+    if (unit === "pt") return number / PX_TO_PT
+    return number
+}
+
+const BORDER_STYLES = new Set(["solid", "dashed", "dotted", "double"])
+
+type BorderEdge = "top" | "right" | "bottom" | "left"
+
+/** Draw borders with support for solid/dashed/dotted/double styles. */
 function paintBorders(
     win: Window,
     container: HTMLElement,
@@ -1007,69 +1194,86 @@ function paintBorders(
 ): void {
     for (const el of walkElements(win, container)) {
         const style = win.getComputedStyle(el)
-        const sides = [
-            {
-                width: parseFloat(style.borderTopWidth),
-                style: style.borderTopStyle,
-                color: style.borderTopColor,
-                edge: "top" as const
-            },
-            {
-                width: parseFloat(style.borderRightWidth),
-                style: style.borderRightStyle,
-                color: style.borderRightColor,
-                edge: "right" as const
-            },
-            {
-                width: parseFloat(style.borderBottomWidth),
-                style: style.borderBottomStyle,
-                color: style.borderBottomColor,
-                edge: "bottom" as const
-            },
-            {
-                width: parseFloat(style.borderLeftWidth),
-                style: style.borderLeftStyle,
-                color: style.borderLeftColor,
-                edge: "left" as const
-            }
+        const sides: Array<{
+            width: number
+            style: string
+            color: string
+            edge: BorderEdge
+        }> = [
+            {width: parseFloat(style.borderTopWidth), style: style.borderTopStyle, color: style.borderTopColor, edge: "top"},
+            {width: parseFloat(style.borderRightWidth), style: style.borderRightStyle, color: style.borderRightColor, edge: "right"},
+            {width: parseFloat(style.borderBottomWidth), style: style.borderBottomStyle, color: style.borderBottomColor, edge: "bottom"},
+            {width: parseFloat(style.borderLeftWidth), style: style.borderLeftStyle, color: style.borderLeftColor, edge: "left"}
         ]
-        if (sides.every(s => !s.width || s.style !== "solid")) {
+        const drawable = sides.filter(
+            s => s.width > 0 && BORDER_STYLES.has(s.style)
+        )
+        if (drawable.length === 0) {
             continue
         }
         const rect = el.getBoundingClientRect()
         const x = rect.left - containerRect.left
         const y = rect.top - containerRect.top
-        for (const side of sides) {
-            if (!side.width || side.style !== "solid") {
-                continue
-            }
+        const w = rect.width
+        const h = rect.height
+
+        // Convert a pixel point (relative to the container, origin top-left)
+        // to PDF coordinates.
+        const toPt = (sx: number, sy: number) => {
+            const p = toPdf(sx, sy, 0)
+            return {x: p.x, y: p.y}
+        }
+
+        for (const side of drawable) {
             const color = parseCssColor(side.color)
             if (!color || color.alpha === 0) {
                 continue
             }
-            const w = side.width
-            let rx = x
-            let ry = y
-            let rw = rect.width
-            let rh = w
-            if (side.edge === "bottom") {
-                ry = y + rect.height - w
-            } else if (side.edge === "left") {
-                rw = w
-                rh = rect.height
-            } else if (side.edge === "right") {
-                rx = x + rect.width - w
-                rw = w
-                rh = rect.height
+            const thicknessPt = Math.max(0.4, side.width * PX_TO_PT)
+            const rgbColor = color.rgb
+            const strokeOpts = {
+                thickness: thicknessPt,
+                color: rgbColor,
+                dashArray:
+                    side.style === "dotted"
+                        ? [thicknessPt * 0.4, thicknessPt * 2]
+                        : side.style === "dashed"
+                          ? [thicknessPt * 3, thicknessPt * 2]
+                          : undefined,
+                lineCap:
+                    side.style === "dotted" ? LineCapStyle.Round : undefined
+            } as const
+
+            const drawLineOnly = (a: {x: number; y: number}, b: {x: number; y: number}): void => {
+                page.drawLine({start: a, end: b, ...strokeOpts})
             }
-            const pos = toPdf(rx, ry, rh)
-            page.drawRectangle({
-                x: pos.x,
-                y: pos.y,
-                width: rw * PX_TO_PT,
-                height: rh * PX_TO_PT,
-                color: color.rgb
-            })
+
+            const drawDouble = (a: {x: number; y: number}, b: {x: number; y: number}): void => {
+                // Two parallel lines separated by the border thickness.
+                const dx = b.x - a.x
+                const dy = b.y - a.y
+                const len = Math.hypot(dx, dy) || 1
+                const nx = (-dy / len) * thicknessPt
+                const ny = (dx / len) * thicknessPt
+                page.drawLine({start: {x: a.x + nx, y: a.y + ny}, end: {x: b.x + nx, y: b.y + ny}, thickness: thicknessPt, color: rgbColor})
+                page.drawLine({start: {x: a.x - nx, y: a.y - ny}, end: {x: b.x - nx, y: b.y - ny}, thickness: thicknessPt, color: rgbColor})
+            }
+
+            if (side.edge === "top" || side.edge === "bottom") {
+                const centerY =
+                    side.edge === "top" ? y + side.width / 2 : y + h - side.width / 2
+                const a = toPt(x, centerY)
+                const b = toPt(x + w, centerY)
+                if (side.style === "double") drawDouble(a, b)
+                else drawLineOnly(a, b)
+            } else {
+                const centerX =
+                    side.edge === "left" ? x + side.width / 2 : x + w - side.width / 2
+                const a = toPt(centerX, y)
+                const b = toPt(centerX, y + h)
+                if (side.style === "double") drawDouble(a, b)
+                else drawLineOnly(a, b)
+            }
         }
     }
 }
@@ -1189,7 +1393,7 @@ function collectWords(
     win: Window,
     container: HTMLElement,
     containerRect: DOMRect,
-    _fonts: Record<string, LoadedFamily>
+    ctx: FontSelectionContext
 ): WordRun[] {
     const words: WordRun[] = []
     const doc = win.document
@@ -1214,13 +1418,15 @@ function collectWords(
         const color = parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0)
         const fontSizePx = parseFloat(style.fontSize)
         const transform = style.textTransform
-        const variant = pickVariant(
+        const fontKey = resolveRunFontKey(
+            ctx,
+            style.fontFamily,
             style.fontWeight,
-            style.fontStyle,
-            style.fontFamily
+            style.fontStyle
         )
         const decorations = getTextDecorations(win, container, parent)
         const smallCaps = style.fontVariantCaps.includes("small-caps")
+        const baseRtl = style.direction === "rtl"
         const text = textNode.data
 
         const applyTransform = (s: string): string => {
@@ -1243,10 +1449,9 @@ function collectWords(
                 yBottom: rect.bottom - containerRect.top,
                 width: rect.width,
                 fontSizePx,
-                variant,
+                fontKey,
                 color,
-                lineThrough: decorations.lineThrough,
-                underline: decorations.underline,
+                decoration: decorations,
                 smallCaps
             })
         }
@@ -1257,49 +1462,58 @@ function collectWords(
         }
 
         // Split into words, keeping offsets so each word can be ranged
-        // and measured individually.
+        // and measured individually. Words are further split into bidi runs
+        // so mixed RTL/LTR content (e.g. Latin words or digits inside Arabic
+        // script) is laid out with the correct direction per run.
         const wordPattern = /\S+/g
         let match: RegExpExecArray | null
         while ((match = wordPattern.exec(text)) !== null) {
             const word = match[0]
-            const wordEnd = match.index + word.length
-            const wordRect = measureRange(match.index, wordEnd)
-            const rects = Array.from(range.getClientRects()).filter(
-                r => r.width > 0 && r.height > 0
-            )
-            if (rects.length <= 1) {
-                if (wordRect.width > 0 && wordRect.height > 0) {
-                    pushRun(word, wordRect)
-                }
+            const runs = splitBidiRuns(word, baseRtl)
+            if (runs.length === 0) {
                 continue
             }
-            // The word wraps across lines (e.g. broken at a hyphen). Group
-            // its characters by line and emit one run per group — otherwise
-            // the whole word would be drawn once per fragment and overlap
-            // the following words.
-            let groupStart = match.index
-            let lineTop: number | null = null
-            for (let k = match.index; k < wordEnd; k++) {
-                const charRect = measureRange(k, k + 1)
-                if (charRect.width === 0 || charRect.height === 0) {
+            for (const run of runs) {
+                const runStart = match.index + run.start
+                const runEnd = runStart + run.text.length
+                const runRect = measureRange(runStart, runEnd)
+                const rects = Array.from(range.getClientRects()).filter(
+                    r => r.width > 0 && r.height > 0
+                )
+                if (rects.length <= 1) {
+                    if (runRect.width > 0 && runRect.height > 0) {
+                        pushRun(run.text, runRect)
+                    }
                     continue
                 }
-                if (lineTop === null) {
-                    lineTop = charRect.top
-                } else if (Math.abs(charRect.top - lineTop) > 1) {
-                    pushRun(
-                        text.slice(groupStart, k),
-                        measureRange(groupStart, k)
-                    )
-                    groupStart = k
-                    lineTop = charRect.top
+                // The run wraps across lines (e.g. broken at a hyphen).
+                // Group its characters by line and emit one run per group —
+                // otherwise the whole run would be drawn once per fragment
+                // and overlap the following text.
+                let groupStart = runStart
+                let lineTop: number | null = null
+                for (let k = runStart; k < runEnd; k++) {
+                    const charRect = measureRange(k, k + 1)
+                    if (charRect.width === 0 || charRect.height === 0) {
+                        continue
+                    }
+                    if (lineTop === null) {
+                        lineTop = charRect.top
+                    } else if (Math.abs(charRect.top - lineTop) > 1) {
+                        pushRun(
+                            text.slice(groupStart, k),
+                            measureRange(groupStart, k)
+                        )
+                        groupStart = k
+                        lineTop = charRect.top
+                    }
                 }
-            }
-            if (groupStart < wordEnd) {
-                pushRun(
-                    text.slice(groupStart, wordEnd),
-                    measureRange(groupStart, wordEnd)
-                )
+                if (groupStart < runEnd) {
+                    pushRun(
+                        text.slice(groupStart, runEnd),
+                        measureRange(groupStart, runEnd)
+                    )
+                }
             }
         }
     }
@@ -1317,7 +1531,7 @@ function collectListMarkers(
     win: Window,
     container: HTMLElement,
     containerRect: DOMRect,
-    fonts: Record<string, LoadedFamily>
+    ctx: FontSelectionContext
 ): WordRun[] {
     const runs: WordRun[] = []
     for (const el of walkElements(win, container)) {
@@ -1354,15 +1568,16 @@ function collectListMarkers(
             continue
         }
         const fontSizePx = parseFloat(style.fontSize)
-        const variant = pickVariant(
+        const fontKey = resolveRunFontKey(
+            ctx,
+            style.fontFamily,
             style.fontWeight,
-            style.fontStyle,
-            style.fontFamily
+            style.fontStyle
         )
-        const font = resolveFont(
-            fonts[familyName(FONT_FAMILIES[variant.familyIndex])],
-            variant.cut
-        ).pdfFont
+        const font = ctx.byKey.get(fontKey)?.pdfFont
+        if (!font) {
+            continue
+        }
         // Right-align the marker ending 0.4em left of the item's box.
         const markerWidthPx =
             (font.widthOfTextAtSize(marker, fontSizePx * PX_TO_PT) /
@@ -1381,10 +1596,9 @@ function collectListMarkers(
             yBottom: yTop + fontSizePx * 1.2,
             width: markerWidthPx,
             fontSizePx,
-            variant,
+            fontKey,
             color: parseCssColor(style.color)?.rgb ?? rgb(0, 0, 0),
-            lineThrough: false,
-            underline: false,
+            decoration: {underline: null, overline: null, lineThrough: null},
             smallCaps: false
         })
     }
@@ -1392,45 +1606,164 @@ function collectListMarkers(
 }
 
 /**
- * Does any ancestor (up to the page container) carry
- * `text-decoration-line: line-through`? Text decorations propagate to
- * inline descendants visually, but the computed style only shows them on
- * the element they are declared on — so walk up. Results are cached per
- * ancestor element.
+ * Does any ancestor (up to the page container) carry a text-decoration line
+ * (`line-through`, `overline`, `underline`)? Text decorations propagate to
+ * inline descendants visually, but the computed style only shows them on the
+ * element they are declared on — so walk up, taking the nearest ancestor's
+ * style/color for each decoration line. Results are cached per element.
  */
-interface TextDecorations {
-    lineThrough: boolean
-    underline: boolean
-}
+const decorationCache = new WeakMap<HTMLElement, TextDecoration>()
 
-const decorationCache = new WeakMap<HTMLElement, TextDecorations>()
+function decorationLineFrom(
+    style: CSSStyleDeclaration
+): {style: DecorationStyle; color: RGB | null} {
+    const raw = style.textDecorationStyle
+    const decoStyle: DecorationStyle =
+        raw === "double" ||
+        raw === "dotted" ||
+        raw === "dashed" ||
+        raw === "wavy"
+            ? raw
+            : "solid"
+    const color = parseCssColor(style.textDecorationColor)
+    return {style: decoStyle, color: color ? color.rgb : null}
+}
 
 function getTextDecorations(
     win: Window,
     container: HTMLElement,
     el: HTMLElement
-): TextDecorations {
+): TextDecoration {
     const cached = decorationCache.get(el)
     if (cached !== undefined) {
         return cached
     }
-    const result: TextDecorations = {lineThrough: false, underline: false}
+    const result: TextDecoration = {
+        underline: null,
+        overline: null,
+        lineThrough: null
+    }
     let node: HTMLElement | null = el
     while (node && node !== container) {
-        const line = win.getComputedStyle(node).textDecorationLine
-        if (line.includes("line-through")) {
-            result.lineThrough = true
+        const style = win.getComputedStyle(node)
+        const line = style.textDecorationLine
+        if (line.includes("line-through") && !result.lineThrough) {
+            result.lineThrough = decorationLineFrom(style)
         }
-        if (line.includes("underline")) {
-            result.underline = true
+        if (line.includes("overline") && !result.overline) {
+            result.overline = decorationLineFrom(style)
         }
-        if (result.lineThrough && result.underline) {
+        if (line.includes("underline") && !result.underline) {
+            result.underline = decorationLineFrom(style)
+        }
+        if (result.lineThrough && result.overline && result.underline) {
             break
         }
         node = node.parentElement
     }
     decorationCache.set(el, result)
     return result
+}
+
+/** Paint a single decoration line in the given style (PDF coordinates, pt). */
+function paintStyledLine(
+    page: PDFPage,
+    x: number,
+    y: number,
+    width: number,
+    thickness: number,
+    style: DecorationStyle,
+    color: RGB
+): void {
+    if (style === "solid") {
+        page.drawLine({
+            start: {x, y},
+            end: {x: x + width, y},
+            thickness,
+            color
+        })
+        return
+    }
+    if (style === "double") {
+        const t = Math.max(0.4, thickness)
+        page.drawLine({
+            start: {x, y: y - t},
+            end: {x: x + width, y: y - t},
+            thickness: t,
+            color
+        })
+        page.drawLine({
+            start: {x, y: y + t},
+            end: {x: x + width, y: y + t},
+            thickness: t,
+            color
+        })
+        return
+    }
+    if (style === "dashed") {
+        page.drawLine({
+            start: {x, y},
+            end: {x: x + width, y},
+            thickness,
+            color,
+            dashArray: [thickness * 3, thickness * 2]
+        })
+        return
+    }
+    if (style === "dotted") {
+        page.drawLine({
+            start: {x, y},
+            end: {x: x + width, y},
+            thickness,
+            color,
+            dashArray: [0.01, thickness * 2],
+            lineCap: LineCapStyle.Round
+        })
+        return
+    }
+    // wavy: a sine polyline.
+    const steps = Math.max(8, Math.floor(width / Math.max(2, thickness * 2)))
+    const amplitude = thickness
+    const periods = Math.max(1, Math.floor(width / (thickness * 8)))
+    let prev = {x, y}
+    for (let i = 1; i <= steps; i++) {
+        const xx = x + (i / steps) * width
+        const yy = y + amplitude * Math.sin((i / steps) * Math.PI * 2 * periods)
+        page.drawLine({start: prev, end: {x: xx, y: yy}, thickness, color})
+        prev = {x: xx, y: yy}
+    }
+}
+
+/** Draw a word's text decorations (underline/overline/line-through). */
+function drawWordDecorations(
+    page: PDFPage,
+    word: WordRun,
+    xPt: number,
+    baselineY: number,
+    sizePt: number
+): void {
+    const width = word.width * PX_TO_PT
+    const paint = (
+        line: DecorationLine | null,
+        offset: number,
+        thickness: number
+    ): void => {
+        if (!line) {
+            return
+        }
+        paintStyledLine(
+            page,
+            xPt,
+            baselineY + offset,
+            width,
+            thickness,
+            line.style,
+            line.color ?? word.color
+        )
+    }
+    paint(word.decoration.lineThrough, sizePt * 0.3, sizePt / 18)
+    paint(word.decoration.overline, sizePt * 0.8, sizePt / 16)
+    paint(word.decoration.underline, -sizePt * 0.1, sizePt / 16)
 }
 
 function bulletDepth(el: Element): number {
@@ -1512,36 +1845,6 @@ function markerForListStyle(
     }
 
     return null
-}
-
-function pickVariant(
-    fontWeight: string,
-    fontStyle: string,
-    fontFamily: string
-): FontRun {
-    const weight = parseInt(fontWeight, 10)
-    const bold = Number.isNaN(weight) ? fontWeight === "bold" : weight >= 600
-    const italic = fontStyle === "italic" || fontStyle === "oblique"
-
-    let cut: FontCut
-    if (bold && italic) {
-        cut = "boldItalic"
-    } else if (bold) {
-        cut = "bold"
-    } else if (italic) {
-        cut = "italic"
-    } else {
-        cut = "regular"
-    }
-
-    // Pick the first configured family whose regex matches the computed family.
-    for (let i = 0; i < FONT_FAMILIES.length; i++) {
-        if (FONT_FAMILIES[i].familyMatch.test(fontFamily)) {
-            return {familyIndex: i, cut}
-        }
-    }
-    // Fallback to the last configured family (typically the serif default).
-    return {familyIndex: FONT_FAMILIES.length - 1, cut}
 }
 
 interface ParsedColor {

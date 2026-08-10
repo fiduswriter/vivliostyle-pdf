@@ -44,11 +44,16 @@ DOM→PDF emitter (src/pdf-emitter.ts)
     XYZ destinations, sets viewer preferences (PageMode /UseOutlines,
     DisplayDocTitle), and embeds the pre-pagination source HTML as a
     file attachment
-  • embeds Libertinus Serif (Regular/Bold/Italic/BoldItalic) and
-    Libertinus Mono (subsetted) via @pdfme/pdf-lib + foliojs fontkit v2;
-    monospace is detected from the computed font-family (vivliostyle
-    rewrites families to e.g. `Fnt_2, "Libertinus Mono", monospace`, but
-    the original names survive)
+  • resolves fonts the way the browser does: every `@font-face` rule in
+    the paginated document (inlined by the Fidus print exporter, with
+    `documentstylefile_set` asset URLs already absolute) is discovered,
+    fetched, normalized to embeddable sfnt bytes (WOFF unwrapped in pure JS;
+    WOFF2 skipped with a warning) and embedded subsetted via @pdfme/pdf-lib
+    + foliojs fontkit — then CSS font matching (family → style → weight
+    band, vivliostyle `Fnt_n` aliases stripped) picks the right cut per text
+    run. Identical fonts are embedded once (semantic dedup). Libertinus
+    Serif/Mono TTFs in public/fonts/ serve only as the last-resort fallback
+    and as the demo's active font.
         │
         ▼
 Uint8Array → Blob → download as demo.pdf
@@ -77,15 +82,24 @@ index.html                  demo page (vite entry)
 src/main.ts                 wiring: paginate → emit → download
 src/pdf-emitter.ts          the DOM→PDF emitter (public API:
                             emitPdfFromVivliostyleWindow(win))
+src/font-face.ts            @font-face discovery + CSS font matching
+src/font-formats.ts         font format sniffing + WOFF→sfnt normalization
 src/demo-document.html      rich test document (paged CSS, TOC, footnotes,
                             cross references, external links, 3 tables,
                             3 figures, bibliography)
 src/vivliostyle-print.d.ts  types for the untyped @vivliostyle/print
-public/fonts/               Libertinus Serif + Libertinus Mono TTFs (OFL)
+public/fonts/               Libertinus Serif + Libertinus Mono TTFs (OFL) plus
+                            Noto Sans Arabic/Hebrew test fonts (OFL)
 public/images/              figure SVGs + generated PNG
 scripts/gen-assets.mjs      dependency-free PNG generator (node zlib)
 scripts/debug-run.mjs       dev helper: run generation, log console, save PDF
 test/e2e.spec.ts            Playwright end-to-end test
+test/math.spec.ts           MathML translation verification (known gap)
+test/fonts.spec.ts          dynamic font resolution e2e (matching, WOFF, dedup)
+test/font-formats.spec.ts   node tests for font sniffing + WOFF round-trip
+test/bidi.spec.ts           node tests for the bidi-run splitter
+test/rtl.spec.ts            RTL/bidi end-to-end (positions, mixed runs)
+test/decor.spec.ts          text-decoration + border-style breadth vector ops
 .github/workflows/pages.yml GitHub Pages deployment
 ```
 
@@ -112,7 +126,15 @@ The demo document (`src/demo-document.html`) deliberately exercises:
   emitter), small caps (synthesized by the emitter), and monospace code
   spans plus a `<pre>` block set in Libertinus Mono,
 - headings with CSS-counter numbering, nested lists, a blockquote, inline
-  code and a dark `<pre>` block, and a bibliography.
+  code and a dark `<pre>` block, and a bibliography,
+- a "Typography, Direction & Decoration" section exercising the added
+  features: **custom `@font-face` families** (DejaVu Sans, Noto Sans
+  Arabic/Hebrew — discovered by the emitter, no hardcoded registry),
+  **right-to-left text** (Arabic and Hebrew, including Arabic mixed with a
+  Western number), **text-decoration breadth** (dashed/dotted/double/wavy
+  underlines, overline, dotted strikethrough), **border-style breadth**
+  (dashed/dotted/double boxes) and **rounded chips/badges**, and **deep
+  outline levels** (h4–h6 bookmarks).
 
 The e2e test (`test/e2e.spec.ts`) verifies these features in the generated
 PDF by extracting per-page text and annotations with `pdfjs-dist`
@@ -184,13 +206,15 @@ Because the emitter writes the PDF itself, it can add structures that
 - **Approximate baselines**: text is placed at
   `rect.bottom − descent(fontSize)` with fontkit metrics, which can be off
   by a fraction of a point versus the browser's true line boxes.
-- **Two font families**: text maps to Libertinus Serif (Regular/Bold/
-  Italic/BoldItalic) or, for computed font-families matching `/mono/i`
-  (generic `monospace` or a family containing "mono"), to Libertinus Mono
-  Regular (bold/italic code falls back to regular mono, which is normal
-  for code). Adding another family means: drop the TTFs into
-  `public/fonts/`, add entries to `FONT_FILES` in `src/pdf-emitter.ts`,
-  and extend the mapping in `pickVariant`.
+- **Two font families of fallback**: text maps to the document's own
+  `@font-face` fonts (any family/weight/style the style declares; the standard
+  weight ranges and italic/oblique are matched per CSS Fonts 4). When no rule
+  matches (or its font could not be embedded, e.g. WOFF2), text falls back to
+  Libertinus Serif (Regular/Bold/Italic/BoldItalic) or Libertinus Mono
+  Regular. WOFF is embedded server-side-free (unwrapped in pure JS); WOFF2 is
+  not yet embeddable. Adding a fallback family means: drop the TTFs into
+  `public/fonts/` and add entries to `FALLBACK_FONT_FILES` in
+  `src/pdf-emitter.ts`.
 - **Link annotations are invisible**: external URI links and internal
   GoTo links (TOC, cross references) are clickable, but they are drawn
   with `Border: [0,0,0]` and no highlight — and since **underlines are
@@ -217,12 +241,18 @@ Because the emitter writes the PDF itself, it can add structures that
 
 - Calibrate baselines per line (per-character range pass) instead of the
   descent heuristic.
-- Generalize the font registry (font-family/weight/style mapping table,
-  OpenType feature support for real small caps via shaping).
-- Keep SVGs vector. @pdfme/pdf-lib has `page.drawSvg()`, but it drops
-  `<marker>` arrowheads and sizes `<text>` with fallback font metrics
-  (labels overflowed in a quick test), so SVGs stay rasterized for now.
-- Follow the CSS paint-order spec for overlapping content.
+- Border-radius on bordered boxes (backgrounds are rounded already); groove/
+  ridge/inset/outset border styles; box-shadow/text-shadow/outline.
+- Math via MathLive/SVG (inline + display equations) instead of native MathML
+  token copying.
+- Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks
+  them), WOFF2 embedding, `unicode-range`, `size-adjust`/descent-override
+  descriptors, OpenType feature control.
+- Outline h4–h6, list-marker fidelity, and the Fidus `-adapt-template`
+  footnote-path verification harness.
+- Keep SVGs vector (@pdfme/pdf-lib `page.drawSvg()` drops `<marker>` arrowheads
+  and sizes `<text>` with fallback metrics today) and follow the CSS paint-order
+  spec for overlapping content.
 - Reuse the emitter for Fidus Writer's client-side PDF export.
 
 ## Licenses

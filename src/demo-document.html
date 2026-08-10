@@ -42,6 +42,21 @@
                 font-family: "Libertinus Mono";
                 src: url("__BASE__fonts/LibertinusMono-Regular.ttf");
             }
+            /* Additional families loaded purely through @font-face — the
+               emitter discovers them from the paginated document (no hardcoded
+               registry) with CSS font matching. */
+            @font-face {
+                font-family: "DejaVu Sans";
+                src: url("__BASE__fonts/DejaVuSans.ttf");
+            }
+            @font-face {
+                font-family: "Noto Sans Arabic";
+                src: url("__BASE__fonts/NotoSansArabic-Regular.ttf");
+            }
+            @font-face {
+                font-family: "Noto Sans Hebrew";
+                src: url("__BASE__fonts/NotoSansHebrew-Regular.ttf");
+            }
 
             /* ---- Paged media setup ---- */
             @page {
@@ -306,6 +321,68 @@
             ol.bibliography li {
                 margin-bottom: 4pt;
             }
+
+            /* ---- Typography, direction & decoration samples ---- */
+            .font-dejavu {
+                font-family: "DejaVu Sans", sans-serif;
+            }
+            .font-arabic {
+                font-family: "Noto Sans Arabic", "DejaVu Sans", serif;
+            }
+            .font-hebrew {
+                font-family: "Noto Sans Hebrew", "DejaVu Sans", serif;
+            }
+            p.rtl {
+                direction: rtl;
+                text-align: right;
+            }
+            /* text-decoration breadth: style variants + overline */
+            .u-dashed {
+                text-decoration: underline dashed #b00020;
+                text-decoration-thickness: 1pt;
+            }
+            .u-dotted {
+                text-decoration: underline dotted #2456a6;
+            }
+            .u-double {
+                text-decoration: underline double #2f9e44;
+            }
+            .u-wavy {
+                text-decoration: underline wavy #d9480f;
+            }
+            .o-line {
+                text-decoration: overline #555;
+            }
+            .strike-dotted {
+                text-decoration: line-through dotted #6f42c1;
+            }
+            /* border-style breadth + rounded chips */
+            .b-dashed {
+                border: 2pt dashed #666;
+                padding: 5pt 8pt;
+                margin: 6pt 0;
+            }
+            .b-dotted {
+                border: 1.5pt dotted #2456a6;
+                padding: 5pt 8pt;
+                margin: 6pt 0;
+            }
+            .b-double {
+                border: 3pt double #8a5cf6;
+                padding: 5pt 8pt;
+                margin: 6pt 0;
+            }
+            .chip {
+                display: inline-block;
+                background: #e8e8e8;
+                border-radius: 9pt;
+                padding: 1pt 7pt;
+                margin: 0 2pt;
+                font-size: 9pt;
+            }
+            .chip-blue {
+                background: #dbe7ff;
+            }
         </style>
     </head>
     <body>
@@ -341,6 +418,7 @@
                 <li><a href="#sec-pipeline">The Pagination Pipeline</a></li>
                 <li><a href="#sec-tables">Tabular Results</a></li>
                 <li><a href="#sec-figures">Figures</a></li>
+                <li><a href="#sec-typography">Typography &amp; Direction</a></li>
                 <li><a href="#sec-discussion">Discussion</a></li>
                 <li><a href="#sec-conclusion">Conclusion</a></li>
                 <li><a href="#sec-refs">References</a></li>
@@ -599,6 +677,58 @@
             <figcaption>Figure 3: Latency by payload size for two emitter variants.</figcaption>
         </figure>
 
+        <h2 id="sec-typography">Typography, Direction &amp; Decoration</h2>
+        <p>
+            A document style can ship any <code>@font-face</code> font; the
+            emitter discovers those faces from the paginated document and
+            applies CSS font matching per run. Three additional families are
+            pulled in this way.
+        </p>
+
+        <h3>Custom document fonts</h3>
+        <p class="font-dejavu">
+            This paragraph is set in DejaVu Sans — an unrelated sans-serif the
+            emitter has no prior knowledge of — resolved purely from the
+            document's own <code>@font-face</code> rule and embedded subsetted.
+        </p>
+        <p>
+            Arabic with a Western number, rendered right-to-left within an
+            LTR sentence: <span class="font-arabic" dir="rtl"
+                >التقرير 2024 جاهز</span
+            >.
+        </p>
+        <p>Hebrew: <span class="font-hebrew" dir="rtl">שלום עולם</span>.</p>
+
+        <h3>Right-to-left paragraphs</h3>
+        <p class="font-arabic rtl">مرحبا بالعالم السلام عليكم</p>
+
+        <h4>Deep outline levels</h4>
+        <p>
+            Bookmark navigation covers every heading through level six below.
+        </p>
+        <h5>Level five heading</h5>
+        <p>A nested detail.</p>
+        <h6>Level six heading</h6>
+        <p>The deepest nesting here.</p>
+
+        <h3>Text-decoration breadth</h3>
+        <p class="u-dashed">Dashed underline</p>
+        <p class="u-dotted">Dotted underline</p>
+        <p class="u-double">Double underline</p>
+        <p class="u-wavy">Wavy underline</p>
+        <p class="o-line">Overline</p>
+        <p class="strike-dotted">Dotted strikethrough</p>
+
+        <h3>Border styles &amp; rounded corners</h3>
+        <div class="b-dashed">A dashed border box.</div>
+        <div class="b-dotted">A dotted border box.</div>
+        <div class="b-double">A double border box.</div>
+        <p>
+            Rounded <span class="chip">chips</span> and
+            <span class="chip chip-blue">pill badges</span> keep their corner
+            radius.
+        </p>
+
         <h2 id="sec-discussion">Discussion</h2>
         <p>
             As the feature matrix in <a class="xref" href="#tab-2">Table 2</a>
@@ -606,16 +736,19 @@
             <a class="xref" href="#fig-3">Figure 3</a> hints at the cost of one
             of them. Text baselines are derived from font metrics rather than
             the browser's internal line boxes, which can shift glyphs by a
-            fraction of a point. Underlines are not painted, so links appear
-            as colored-only text even though their annotations are clickable.
-            Backgrounds and borders are painted in document order, a
-            simplification of the CSS stacking model that suffices for the
-            table styles used in this report but would break on overlapping
-            content. List markers are synthesized approximations, small caps
-            are drawn as scaled uppercase glyphs rather than real
-            <code>smcp</code> substitutions, and hyphens inserted by browser
-            hyphenation would not be reproduced. Tagged PDF and PDF/A output
-            remain out of scope.
+            fraction of a point. Backgrounds and borders are painted in
+            document order, a simplification of the CSS stacking model that
+            suffices for the table styles used in this report but would break
+            on overlapping content. Border-radius is applied to fills but not
+            yet to bordered outlines. List markers are synthesized
+            approximations, small caps are drawn as scaled uppercase glyphs
+            rather than real <code>smcp</code> substitutions, and hyphens
+            inserted by browser hyphenation would not be reproduced. Math is
+            not yet translated faithfully: MathML's fraction bars, radicals
+            and stretchy delimiters are painted by the engine rather than
+            emitted as tokens, and are best served by exporting MathLive SVG
+            from the source exporter. Tagged PDF and PDF/A output remain out
+            of scope.
         </p>
         <p>
             None of these limitations is fundamental. Baselines can be taken

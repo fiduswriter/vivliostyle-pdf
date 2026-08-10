@@ -40,7 +40,7 @@ DOM→PDF emitter (src/pdf-emitter.ts)
     "#viv-id-<encoded doc URL>:0023id" — the emitter strips that prefix)
   • sets document metadata (Title/Author/Subject/Keywords/Creator/
     Producer/Language, from the source document's <title>/<meta> tags),
-    builds a nested PDF outline (bookmarks) from the h1–h3 headings with
+    builds a nested PDF outline (bookmarks) from the h1–h6 headings with
     XYZ destinations, sets viewer preferences (PageMode /UseOutlines,
     DisplayDocTitle), and embeds the pre-pagination source HTML as a
     file attachment
@@ -191,7 +191,7 @@ Because the emitter writes the PDF itself, it can add structures that
   keywords">` tags (parsed from the raw HTML — vivliostyle's iframe does
   not retain the source `<head>`); Creator, Producer, the document
   language (`/Lang en-US`) and creation/modification dates are set too.
-- **Outline (bookmarks)**: every h1–h3 heading becomes a bookmark,
+- **Outline (bookmarks)**: every h1–h6 heading becomes a bookmark,
   nested by heading level, with an XYZ destination to the page and
   vertical position of the heading. The outline tree is built with the
   low-level object API (all item refs are registered first, then
@@ -205,50 +205,46 @@ Because the emitter writes the PDF itself, it can add structures that
   and its source can be extracted with any PDF tool (`pdfdetach`,
   Acrobat's attachments panel, etc.).
 
-## Limitations (prototype)
+## Limitations
 
-- **Approximate baselines**: text is placed at
-  `rect.bottom − descent(fontSize)` with fontkit metrics, which can be off
-  by a fraction of a point versus the browser's true line boxes.
-- **Two font families of fallback**: text maps to the document's own
-  `@font-face` fonts (any family/weight/style the style declares; the standard
-  weight ranges and italic/oblique are matched per CSS Fonts 4). When no rule
-  matches (or its font could not be embedded, e.g. WOFF2), text falls back to
-  Libertinus Serif (Regular/Bold/Italic/BoldItalic) or Libertinus Mono
-  Regular. WOFF is embedded server-side-free (unwrapped in pure JS); WOFF2 is
-  not yet embeddable. Adding a fallback family means: drop the TTFs into
-  `public/fonts/` and add entries to `FALLBACK_FONT_FILES` in
-  `src/pdf-emitter.ts`.
-- **Link annotations are invisible**: external URI links and internal
-  GoTo links (TOC, cross references) are clickable, but they are drawn
-  with `Border: [0,0,0]` and no highlight — and since **underlines are
-  not painted** (`text-decoration: underline` is dropped; line-through
-  IS drawn), links appear as colored-only text.
-- **Small caps are synthesized**: lowercase letters are drawn as uppercase
-  glyphs at 80% size, fitted to the measured word width. Real `smcp`
-  glyph substitution is not available through pdf-lib/@pdfme/pdf-lib.
-- **Partial painting**: backgrounds and borders are drawn in document
-  order — a simplification of the CSS stacking model. Only solid borders
-  and solid background colors are painted; no border-radius, shadows,
-  gradients, or outlines.
-- **SVGs are rasterized** (2x canvas), not kept vector.
-- **List markers are synthesized** approximations (decimal/disc/circle,
-  right-aligned left of the item box), since vivliostyle's internal
-  `::marker` rendering leaves no DOM text.
-- Words that wrap across lines (e.g. at hyphens) are re-grouped per line
-  fragment by character measurement; browser-inserted hyphenation hyphens
-  would not be reproduced.
-- `text-transform: capitalize` is not reproduced.
-- No tagged PDF structure (accessibility).
+- **Approximate baselines**: text is placed at `rect.bottom − descent(fontSize)`
+  using fontkit metrics, which can be off by a fraction of a point versus the
+  browser's true line boxes. This is intentionally kept rather than a shared
+  per-line baseline, because each run's measured rect already reflects its own
+  line box and descent (forcing one baseline would regress sized runs).
+- **Fallback fonts**: text maps to the document's own `@font-face` fonts (any
+  family/weight/style; weight ranges and italic/oblique matched per CSS Fonts
+  4, vivliostyle `Fnt_n` aliases stripped). When nothing matches — or a
+  configured font can't be embedded — text falls back to Libertinus Serif
+  (Regular/Bold/Italic/BoldItalic) or Libertinus Mono Regular. WOFF is
+  unwrapped to sfnt in pure JS and embedded; **WOFF2 and font collections are
+  not yet embeddable** (they still influence layout via the browser, so
+  positions are right, but the glyphs come from the fallback font). To add a
+  fallback family, drop the TTFs into `public/fonts/` and extend
+  `FALLBACK_FONT_FILES` in `src/pdf-emitter.ts`.
+- **Small caps are synthesized**: lowercase is drawn as uppercase at 80% size,
+  fitted to the measured width; real `smcp` glyph substitution isn't available
+  through pdf-lib/@pdfme/pdf-lib.
+- **Partial painting**: backgrounds/borders are painted in document order — a
+  simplification of the CSS stacking model. Solid, dashed, dotted and double
+  borders and solid background colors are drawn, with rounded corners on
+  background fills; box-shadow, text-shadow, gradients, outlines, and
+  groove/ridge/inset/outset borders are not.
+- **SVGs are rasterized** (2× canvas), not kept vector.
+- **Browser-inserted hyphenation** hyphens are not in the DOM, so a line broken
+  at an auto-hyphen is drawn without the hyphen glyph.
+- **Marker image sizing**: `list-style-image` markers are embedded at their
+  natural size; if a browser scales them (e.g. `::marker` with a sized image)
+  the PDF uses the intrinsic size instead.
+- **No tagged PDF structure** (accessibility).
 
 ## Next steps
 
-- Calibrate sup/sub baselines per line (per-character range pass) instead of
-  the descent heuristic.
-- Border-radius on bordered boxes (backgrounds are rounded already); groove/
-  ridge/inset/outset border styles; box-shadow/text-shadow/outline.
-- Marker image sizing: `list-style-image` markers are embedded at their natural
-  size (Chromium may scale them); fine-grained sizing is future work.
+- `sup`/`sub` (and mixed-size runs) keep the per-run descent heuristic; a
+  line-dominant shared baseline is intentionally not applied because it would
+  regress sized runs (see FEATURES.md §9).
+- Border-radius on bordered outlines (backgrounds are rounded already);
+  groove/ridge/inset/outset border styles; box-shadow/text-shadow/outline.
 - Math via MathLive/SVG (inline + display equations) instead of native MathML
   token copying.
 - Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks
@@ -267,3 +263,8 @@ Because the emitter writes the PDF itself, it can add structures that
   only) is Apache-2.0.
 - Libertinus Serif + Libertinus Mono: SIL Open Font License 1.1
   (`public/fonts/OFL.txt`).
+- Noto Sans Arabic + Noto Sans Hebrew (demo/test RTL coverage): SIL Open Font
+  License 1.1 (also covered by `public/fonts/OFL.txt`; attribution in
+  `public/fonts/NOTICE-Noto.txt`).
+- DejaVu Sans (demo/test custom-font coverage): **Bitstream Vera / Arev Fonts
+  license** (permissive, NOT OFL) — see `public/fonts/NOTICE-DejaVu.txt`.

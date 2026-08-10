@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>list-style-image computed-style probe</title>
+</head>
+<body>
+<style>
+  /* A 1x1 valid PNG as an inline data URI. */
+  ul.imaged li {
+    list-style-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=");
+  }
+</style>
+<h3>list-style-image computed-style probe</h3>
+<ul class="imaged"><li id="a">via stylesheet rule</li></ul>
+<p>
+  getComputedStyle(li).listStyleImage = <b id="el">…</b><br />
+  getComputedStyle(li, '::marker').listStyleImage = <b id="mk">…</b>
+</p>
+<hr />
+<p>
+  <i>
+    Open this file directly in Chromium (or any modern browser). If the values
+    show <code>url("data:image/png;base64,...")</code>, the property IS exposed
+    in computed style. It only reads blank while the image is still loading or
+    failed to resolve.<br /><br />
+    Note: this library's emitter walks the <b>vivliostyle-paginated</b> DOM, and
+    vivliostyle neutralizes <code>list-style-*</code> to <code>none</code> there,
+    so the emitter still cannot currently read image markers from the paginated
+    layout — a vivliostyle-pagination behavior, not a Chromium one.
+  </i>
+</p>
+<script>
+  window.addEventListener("load", () => {
+    const li = document.getElementById("a");
+    // Give the image a moment to load before reading computed style.
+    setTimeout(() => {
+      document.getElementById("el").textContent =
+        getComputedStyle(li).listStyleImage;
+      document.getElementById("mk").textContent =
+        getComputedStyle(li, "::marker").listStyleImage;
+    }, 50);
+  });
+</script>
+</body>
+</html>

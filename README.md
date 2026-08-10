@@ -101,6 +101,7 @@ test/bidi.spec.ts           node tests for the bidi-run splitter
 test/rtl.spec.ts            RTL/bidi end-to-end (positions, mixed runs)
 test/decor.spec.ts          text-decoration + border-style breadth vector ops
 test/markers.spec.ts        list-marker fidelity (inside/outside, ::marker)
+test/list-style-image.spec.ts list-style-image markers + Chromium probe
 test/outline.spec.ts        outline h1–h6 nesting
 test/adapt-template.spec.ts fidus -adapt-template footnote verification
 .github/workflows/pages.yml GitHub Pages deployment
@@ -245,8 +246,9 @@ Because the emitter writes the PDF itself, it can add structures that
 - Calibrate sup/sub baselines per line (per-character range pass) instead of
   the descent heuristic.
 - Border-radius on bordered boxes (backgrounds are rounded already); groove/
-  ridge/inset/outset border styles; box-shadow/text-shadow/outline;
-  `list-style-image` is not detectable (Chromium computed-style limitation).
+  ridge/inset/outset border styles; box-shadow/text-shadow/outline.
+- Marker image sizing: `list-style-image` markers are embedded at their natural
+  size (Chromium may scale them); fine-grained sizing is future work.
 - Math via MathLive/SVG (inline + display equations) instead of native MathML
   token copying.
 - Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks

@@ -27,6 +27,7 @@ import {
     PDFRef,
     PDFString,
     LineCapStyle,
+    PDFImage,
     rgb
 } from "@pdfme/pdf-lib"
 import type {PDFPage, RGB} from "@pdfme/pdf-lib"
@@ -589,8 +590,10 @@ async function emitPage(
     await paintImages(win, pdfDoc, container, containerRect, page, toPdf)
 
     const words = collectWords(win, container, containerRect, fonts)
-    // ::marker pseudo-boxes have no text nodes; synthesize them separately.
-    words.push(...collectListMarkers(win, container, containerRect, fonts))
+    // ::marker pseudo-boxes have no text nodes; synthesize them separately
+    // (text markers become word runs, image markers are drawn afterwards).
+    const markers = collectListMarkers(win, container, containerRect, fonts)
+    words.push(...markers.words)
     for (const word of words) {
         const font = fonts.byKey.get(word.fontKey)
         if (!font) {
@@ -632,6 +635,9 @@ async function emitPage(
             drawWordDecorations(page, word, xPt, baselineY, sizePt)
         }
     }
+
+    // Draw list-style-image markers (natural size, once loaded).
+    await drawMarkerImages(pdfDoc, markers.images, page, toPdf)
 
     // Restore the original (untranslated) graphics state before drawing marks
     // or setting page boxes, so those refer to the full media box.
@@ -1520,30 +1526,42 @@ function collectWords(
     return words
 }
 
-/**
- * Synthesize runs for list markers. ::marker pseudo-boxes have no DOM text
- * node, so word collection never sees them; we approximate them here from
- * each list item's computed style. Handles decimal markers and the common
- * bullet types; markers are drawn right-aligned just left of the item's
- * content box.
- */
+/** A list-marker that is an image (`list-style-image`), drawn at the item's
+    first line. Geometry is deferred because the natural size is only known
+    once the image is loaded. */
+interface MarkerImageRun {
+    url: string
+    /** left edge of the item's border box, relative to the container (px) */
+    boxLeftPx: number
+    /** top of the item's first line, relative to the container (px) */
+    yTopPx: number
+    /** content-box left edge (border+padding), relative to container (px) */
+    contentXInsidePx: number
+    /** gap between an outside marker and the content (px) */
+    gapPx: number
+    /** when true, the marker is placed inside the content box */
+    inside: boolean
+}
+
+interface ListMarkers {
+    words: WordRun[]
+    images: MarkerImageRun[]
+}
+
 /**
  * Synthesize runs for list markers. `::marker` pseudo-boxes have no DOM text
  * node, so word collection never sees them; we approximate them here using
  * the item's computed style and its `::marker` pseudo-element style (color,
- * font, custom `content`, and `list-style-position`).
- *
- * Note: `list-style-image` is not detectable — Chromium does not expose it in
- * computed style (getComputedStyle returns ""), so image markers are not
- * reproduced.
+ * font, custom `content`, `list-style-position` and `list-style-image`).
+ * Text markers become word runs; image markers are returned separately.
  */
 function collectListMarkers(
     win: Window,
     container: HTMLElement,
     containerRect: DOMRect,
     ctx: FontSelectionContext
-): WordRun[] {
-    const runs: WordRun[] = []
+): ListMarkers {
+    const result: ListMarkers = {words: [], images: []}
     for (const el of walkElements(win, container)) {
         const style = win.getComputedStyle(el)
         if (style.display !== "list-item") {
@@ -1599,10 +1617,44 @@ function collectListMarkers(
         const yTopPx =
             rect.top - containerRect.top + (parseFloat(style.paddingTop) || 0)
 
-        // Custom ::marker content (other than the defaults) replaces the
-        // synthesized marker text.
+        // Custom ::marker content / list-style-image resolution.
+        //
+        // Order of precedence:
+        //  1. element or ::marker `list-style-image` (readable in a normal,
+        //     non-paginated document);
+        //  2. vivliostyle renders image markers via the native `::marker`,
+        //     so `::marker content` is `url(...)` there even though the
+        //     element's `list-style-image` is reset to none — read it from there;
+        //  3. custom ::marker string `content` (e.g. `"» "`);
+        //  4. synthesized marker from `list-style-type`.
         const contentProp = markerStyleOrDefault.content
         let markerText: string | null = null
+        let markerImageUrl: string | null = null
+        const nonNone = (v: string): boolean => !!v && v !== "none" && v !== ""
+
+        if (nonNone(style.listStyleImage)) {
+            markerImageUrl = resolveMarkerImageUrl(style.listStyleImage, win.document.baseURI)
+        } else if (nonNone(markerStyleOrDefault.listStyleImage)) {
+            markerImageUrl = resolveMarkerImageUrl(markerStyleOrDefault.listStyleImage, win.document.baseURI)
+        } else if (
+            contentProp &&
+            contentProp.trim().toLowerCase().startsWith("url(")
+        ) {
+            markerImageUrl = resolveMarkerImageUrl(contentProp, win.document.baseURI)
+        }
+
+        if (markerImageUrl) {
+            result.images.push({
+                url: markerImageUrl,
+                boxLeftPx,
+                yTopPx,
+                contentXInsidePx,
+                gapPx,
+                inside
+            })
+            continue
+        }
+
         if (contentProp && contentProp !== "normal" && contentProp !== "none") {
             markerText = contentProp.replace(/^["']|["']$/g, "")
         } else {
@@ -1623,7 +1675,7 @@ function collectListMarkers(
         const x = inside
             ? contentXInsidePx
             : boxLeftPx - markerWidthPx - gapPx
-        runs.push({
+        result.words.push({
             text: markerText,
             x,
             yTop: yTopPx,
@@ -1637,7 +1689,111 @@ function collectListMarkers(
             smallCaps: false
         })
     }
-    return runs
+    return result
+}
+
+/** Extract + resolve a `list-style-image` URL against the document base. */
+function resolveMarkerImageUrl(
+    computedValue: string,
+    baseUri: string
+): string | null {
+    const match = computedValue.match(/url\(\s*(?:["']?)([^"')]+)(?:["']?)\s*\)/)
+    if (!match) {
+        return null
+    }
+    const raw = match[1].trim()
+    try {
+        return new URL(raw, baseUri).href
+    } catch {
+        return raw
+    }
+}
+
+/** Draw `list-style-image` markers once their natural size is known. */
+async function drawMarkerImages(
+    pdfDoc: PDFDocument,
+    images: MarkerImageRun[],
+    page: PDFPage,
+    toPdf: ToPdfFn
+): Promise<void> {
+    for (const marker of images) {
+        let bytes: Uint8Array | null = null
+        try {
+            const response = await fetch(marker.url)
+            if (response.ok) {
+                bytes = new Uint8Array(await response.arrayBuffer())
+            }
+        } catch {
+            bytes = null
+        }
+        if (!bytes) {
+            console.warn(
+                `vivliostyle-pdf: could not load list-style-image ${marker.url}`
+            )
+            continue
+        }
+        const natural = await imageNaturalSize(bytes)
+        if (!natural) {
+            console.warn(
+                `vivliostyle-pdf: could not read list-style-image ${marker.url}`
+            )
+            continue
+        }
+        let image: PDFImage | null = null
+        if (isPng(bytes)) {
+            image = await pdfDoc.embedPng(bytes)
+        } else if (isJpeg(bytes)) {
+            image = await pdfDoc.embedJpg(bytes)
+        } else {
+            console.warn(
+                `vivliostyle-pdf: unsupported list-style-image ${marker.url}`
+            )
+            continue
+        }
+        const widthPx = natural.width
+        const heightPx = natural.height
+        const x = marker.inside
+            ? marker.contentXInsidePx
+            : marker.boxLeftPx - widthPx - marker.gapPx
+        const y = marker.yTopPx
+        const pos = toPdf(x, y, heightPx)
+        page.drawImage(image, {
+            x: pos.x,
+            y: pos.y,
+            width: widthPx * PX_TO_PT,
+            height: heightPx * PX_TO_PT
+        })
+    }
+}
+
+/** Load image bytes into a detached <img> (in the app window) for dimensions. */
+function imageNaturalSize(
+    bytes: Uint8Array
+): Promise<{width: number; height: number} | null> {
+    return new Promise(resolve => {
+        const url = URL.createObjectURL(
+            new Blob([toFreshBuffer(bytes)], {type: "image/png"})
+        )
+        const image = new window.Image()
+        image.onload = () =>
+            resolve(
+                image.naturalWidth && image.naturalHeight
+                    ? {width: image.naturalWidth, height: image.naturalHeight}
+                    : null
+            )
+        image.onerror = () => {
+            URL.revokeObjectURL(url)
+            resolve(null)
+        }
+        image.src = url
+    })
+}
+
+/** Copy bytes into a fresh ArrayBuffer-backed view (Blob typing). */
+function toFreshBuffer(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+    const out = new Uint8Array(bytes.byteLength)
+    out.set(bytes)
+    return out
 }
 
 /**

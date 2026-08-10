@@ -359,12 +359,41 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
         .toLowerCase()
     expect(attHead).toContain("<!doctype html")
 
-    // 11. Catalog-level viewer preferences (@pdfme/pdf-lib can read these
-    //     low-level dictionaries, pdfjs does not expose them).
+    // 11. SVG figures are embedded as vector, not raster images.
+    // The demo contains two PNG images (both figure-2.png) and two SVG images
+    // (figure-1.svg and figure-3.svg). After vectorization there should be
+    // exactly two image XObjects in the whole document.
     const loaded = await PDFDocument.load(bytes)
-    expect(String(loaded.catalog.get(PDFName.of("PageMode")))).toContain(
-        "UseOutlines"
-    )
+    function countImageXObjects(pdfDoc: typeof loaded): number {
+        const imageKeys = new Set<string>()
+        for (const page of pdfDoc.getPages()) {
+            const resources = page.node.Resources()
+            if (!resources) continue
+            const xObjects = resources.get(PDFName.of("XObject"))
+            if (!xObjects || xObjects.constructor.name !== "PDFDict") continue
+            const context = page.node.context
+            const dict = xObjects as unknown as {
+                entries(): Iterable<[PDFName, unknown]>
+            }
+            for (const [key, value] of dict.entries()) {
+                const resolved = context.lookup(value as PDFRef)
+                const subtype =
+                    resolved && typeof resolved === "object" && "dict" in resolved
+                        ? (resolved as {
+                              dict: {get(name: PDFName): unknown}
+                          }).dict.get(PDFName.of("Subtype"))
+                        : null
+                if (String(subtype).includes("Image")) {
+                    imageKeys.add(key.asString())
+                }
+            }
+        }
+        return imageKeys.size
+    }
+    expect(countImageXObjects(loaded)).toBe(2)
+
+    // 12. Catalog-level viewer preferences (@pdfme/pdf-lib can read these
+    //     low-level dictionaries, pdfjs does not expose them).
     expect(String(loaded.catalog.get(PDFName.of("Lang")))).toContain("en-US")
     let vp = loaded.catalog.get(PDFName.of("ViewerPreferences"))
     if (vp instanceof PDFRef) {

@@ -1,9 +1,38 @@
 # vivliostyle-pdf
 
-**Live demo:** <https://johanneswilm.github.io/vivliostyle-pdf/> — click
+**Live demo:** <https://fiduswriter.github.io/vivliostyle-pdf/> — click
 "Generate PDF"; everything happens client-side, no print dialog.
 
 Technical prototype: **browser-only PDF export without the print dialog.**
+
+## Use as a library
+
+```bash
+npm install vivliostyle-pdf @pdfme/pdf-lib
+```
+
+```ts
+import {PDFDocument} from "@pdfme/pdf-lib"
+import {emitPdfFromVivliostyleWindow} from "vivliostyle-pdf"
+import {printHTML} from "@vivliostyle/print"
+
+printHTML(html, {
+    removeIframe: false,
+    printCallback: iframeWindow => {
+        void (async () => {
+            const bytes = await emitPdfFromVivliostyleWindow(
+                iframeWindow,
+                message => console.log(message),
+                {
+                    sourceHtml: html,
+                    metadata: {title: "My document"}
+                }
+            )
+            // e.g. download or upload the bytes
+        })()
+    }
+})
+```
 
 [vivliostyle](https://vivliostyle.org/) paginates an HTML/CSS Paged Media
 document inside a hidden iframe. A custom DOM→PDF emitter then walks the

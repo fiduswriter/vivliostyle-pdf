@@ -17,6 +17,9 @@ importers:
       fontkit:
         specifier: ^2.0.4
         version: 2.0.4
+      svg4pdf-lib:
+        specifier: ^0.1.0
+        version: 0.1.0(@pdfme/pdf-lib@6.1.12)
     devDependencies:
       '@playwright/test':
         specifier: ^1.49.0
@@ -554,6 +557,14 @@ packages:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
 
+  svg-for-pdfkit@0.2.1:
+    resolution: {integrity: sha512-2vAj/EjcDt98m1PM6cFjlyNTqf4FhDtgtUZksuIz/sH9vQOpKpMcGBqGgljCz3DQDmh/o/qSAEWbOiicFHh1ig==}
+
+  svg4pdf-lib@0.1.0:
+    resolution: {integrity: sha512-zUdk6ZQd9a5f2akW4+5GJtTXr5ZEcJFkcjQIoEjqY6FK+lLsLX9ETXBikq24G/cVgsN8PSINHnbBXU7BWbDJ/A==}
+    peerDependencies:
+      '@pdfme/pdf-lib': ^6.1.0
+
   tiny-inflate@1.0.3:
     resolution: {integrity: sha512-pkY1fj1cKHb2seWDy0B16HeWyczlJA9/WW3u3c4z/NiWDsO3DOU5D7nhTLE9CF0yXv/QZFY7sEJmj24dK+Rrqw==}
 
@@ -1005,6 +1016,14 @@ snapshots:
       fsevents: 2.3.3
 
   source-map-js@1.2.1: {}
+
+  svg-for-pdfkit@0.2.1: {}
+
+  svg4pdf-lib@0.1.0(@pdfme/pdf-lib@6.1.12):
+    dependencies:
+      '@pdf-lib/upng': 1.0.1
+      '@pdfme/pdf-lib': 6.1.12
+      svg-for-pdfkit: 0.2.1
 
   tiny-inflate@1.0.3: {}
 

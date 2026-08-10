@@ -20,6 +20,8 @@ const bleedBoxCheckbox =
 const bleedMmInput = document.querySelector<HTMLInputElement>("#bleed-mm")!
 const linkBordersCheckbox =
     document.querySelector<HTMLInputElement>("#link-borders")!
+const rasterizeSvgsCheckbox =
+    document.querySelector<HTMLInputElement>("#rasterize-svgs")!
 
 // Seed the editor with the demo source.
 sourceArea.value = demoHtml
@@ -67,7 +69,8 @@ function generate(): void {
         trimBox: trimBoxCheckbox.checked,
         bleedBox: bleedBoxCheckbox.checked,
         bleedMm,
-        linkAnnotationBorders: linkBordersCheckbox.checked
+        linkAnnotationBorders: linkBordersCheckbox.checked,
+        rasterizeSvgs: rasterizeSvgsCheckbox.checked
     }
 
     printHTML(html, {

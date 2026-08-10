@@ -44,6 +44,7 @@ import {
 } from "./font-face.js"
 import {normalizeFontBytes, sfntTableSignature} from "./font-formats.js"
 import {splitBidiRuns} from "./bidi.js"
+import {drawSvg} from "svg4pdf-lib"
 
 const PX_TO_PT = 0.75
 
@@ -149,6 +150,8 @@ export interface PrintOptions {
     bleedMm?: number
     /** Draw a visible border around each Link annotation. */
     linkAnnotationBorders?: boolean
+    /** Rasterize SVG images at 2x instead of emitting them as vector PDF. */
+    rasterizeSvgs?: boolean
 }
 
 /** Optional extras for emitPdfFromVivliostyleWindow. */
@@ -227,7 +230,8 @@ export async function emitPdfFromVivliostyleWindow(
         bleedBox: options?.printOptions?.bleedBox ?? false,
         bleedMm: Math.max(0, options?.printOptions?.bleedMm ?? 3),
         linkAnnotationBorders:
-            options?.printOptions?.linkAnnotationBorders ?? false
+            options?.printOptions?.linkAnnotationBorders ?? false,
+        rasterizeSvgs: options?.printOptions?.rasterizeSvgs ?? false
     }
 
     const pageOffsets: {x: number; y: number}[] = []
@@ -587,7 +591,7 @@ async function emitPage(
     // 1. backgrounds, 2. borders, 3. images, 4. text.
     paintBackgrounds(win, container, containerRect, page, toPdf)
     paintBorders(win, container, containerRect, page, toPdf)
-    await paintImages(win, pdfDoc, container, containerRect, page, toPdf)
+    await paintImages(win, pdfDoc, container, containerRect, page, toPdf, fonts, printOptions)
 
     const words = collectWords(win, container, containerRect, fonts)
     // ::marker pseudo-boxes have no text nodes; synthesize them separately
@@ -1284,14 +1288,16 @@ function paintBorders(
     }
 }
 
-/** Embed and draw <img> elements. PNG/JPEG embed directly; SVG is rasterized. */
+/** Embed and draw <img> elements. PNG/JPEG embed directly; SVG is drawn as vector by default. */
 async function paintImages(
     win: Window,
     pdfDoc: PDFDocument,
     container: HTMLElement,
     containerRect: DOMRect,
     page: PDFPage,
-    toPdf: ToPdfFn
+    toPdf: ToPdfFn,
+    fonts: FontSelectionContext,
+    printOptions: Required<PrintOptions>
 ): Promise<void> {
     const images = Array.from(container.querySelectorAll("img"))
     for (const img of images) {
@@ -1305,19 +1311,64 @@ async function paintImages(
         const widthPt = rect.width * PX_TO_PT
         const heightPt = rect.height * PX_TO_PT
 
-        const res = await fetch(img.currentSrc || img.src)
+        const imageUrl = img.currentSrc || img.src
+        const res = await fetch(imageUrl)
         if (!res.ok) {
-            console.warn(`Skipping image ${img.src}: HTTP ${res.status}`)
+            console.warn(`Skipping image ${imageUrl}: HTTP ${res.status}`)
             continue
         }
         const bytes = new Uint8Array(await res.arrayBuffer())
-        let embedded
         if (isPng(bytes)) {
-            embedded = await pdfDoc.embedPng(bytes)
+            const embedded = await pdfDoc.embedPng(bytes)
+            page.drawImage(embedded, {
+                x: pos.x,
+                y: pos.y,
+                width: widthPt,
+                height: heightPt
+            })
         } else if (isJpeg(bytes)) {
-            embedded = await pdfDoc.embedJpg(bytes)
+            const embedded = await pdfDoc.embedJpg(bytes)
+            page.drawImage(embedded, {
+                x: pos.x,
+                y: pos.y,
+                width: widthPt,
+                height: heightPt
+            })
+        } else if (isSvg(img.currentSrc || img.src, bytes, res.headers.get("content-type"))) {
+            if (printOptions.rasterizeSvgs) {
+                // User opted to rasterize SVGs: render through the browser canvas
+                // at 2x so unsupported vector features fall back to pixels.
+                const png = await rasterizeToPng(
+                    win,
+                    img.currentSrc || img.src,
+                    img.naturalWidth || rect.width,
+                    img.naturalHeight || rect.height
+                )
+                if (!png) {
+                    console.warn(`Skipping unrasterizable SVG image ${img.src}`)
+                    continue
+                }
+                const embedded = await pdfDoc.embedPng(png)
+                page.drawImage(embedded, {
+                    x: pos.x,
+                    y: pos.y,
+                    width: widthPt,
+                    height: heightPt
+                })
+            } else {
+                // Draw SVG as vector via svg4pdf-lib. The library receives the
+                // on-page rectangle and a font callback backed by our already
+                // embedded fonts.
+                const svgText = new TextDecoder().decode(bytes)
+                drawSvg(page, svgText, pos.x, pos.y, {
+                    width: widthPt,
+                    height: heightPt,
+                    fontCallback: (family, bold, italic) =>
+                        resolveSvgFont(fonts, family, bold, italic)
+                })
+            }
         } else {
-            // Assume SVG (or anything else): rasterize via canvas at 2x.
+            // Fallback for any other image type: rasterize via canvas at 2x.
             const png = await rasterizeToPng(
                 win,
                 img.currentSrc || img.src,
@@ -1328,15 +1379,51 @@ async function paintImages(
                 console.warn(`Skipping unrasterizable image ${img.src}`)
                 continue
             }
-            embedded = await pdfDoc.embedPng(png)
+            const embedded = await pdfDoc.embedPng(png)
+            page.drawImage(embedded, {
+                x: pos.x,
+                y: pos.y,
+                width: widthPt,
+                height: heightPt
+            })
         }
-        page.drawImage(embedded, {
-            x: pos.x,
-            y: pos.y,
-            width: widthPt,
-            height: heightPt
-        })
     }
+}
+
+function isSvg(src: string, bytes: Uint8Array, contentType?: string | null): boolean {
+    if (contentType?.includes("image/svg+xml")) return true
+    const lowerSrc = src.toLowerCase()
+    if (lowerSrc.endsWith(".svg") || lowerSrc.includes(".svg?") || lowerSrc.includes(".svg#")) return true
+    const head = new TextDecoder().decode(bytes.subarray(0, 1024)).trimStart()
+    return head.startsWith("<?xml") || head.startsWith("<svg") || head.includes("<svg")
+}
+
+/** Map an SVG font-family request to one of our embedded fonts. */
+function resolveSvgFont(
+    ctx: FontSelectionContext,
+    family: string,
+    bold: boolean,
+    italic: boolean
+): import("@pdfme/pdf-lib").PDFFont | undefined {
+    const isMono = /mono/i.test(family)
+    const isSans = /sans/i.test(family)
+    const generic = isMono ? "monospace" : isSans ? "sans-serif" : "serif"
+    const cutOrder: FontCut[] = bold && italic
+        ? ["boldItalic", "bold", "italic", "regular"]
+        : bold
+          ? ["bold", "boldItalic", "regular", "italic"]
+          : italic
+            ? ["italic", "boldItalic", "regular", "bold"]
+            : ["regular", "italic", "bold", "boldItalic"]
+    const cuts = ctx.fallback.get(generic)
+    if (!cuts) return undefined
+    for (const cut of cutOrder) {
+        const key = cuts[cut]
+        if (key) {
+            return ctx.byKey.get(key)?.pdfFont
+        }
+    }
+    return undefined
 }
 
 function isPng(bytes: Uint8Array): boolean {

@@ -31,7 +31,7 @@ jobs:
 
             - run: pnpm run gen:assets
 
-            - run: pnpm run build
+            - run: pnpm run build:demo
 
             - uses: actions/configure-pages@v5
 

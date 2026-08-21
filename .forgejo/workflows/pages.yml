@@ -1,0 +1,41 @@
+name: Deploy demo to git-pages
+
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+jobs:
+    deploy:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: pnpm/action-setup@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Generate assets
+              run: pnpm run gen:assets
+
+            - name: Build demo
+              run: pnpm run build:demo
+
+            - name: Deploy to Pages branch
+              run: |
+                  rm -rf _pages
+                  mkdir -p _pages
+                  cp -r dist/* _pages/
+                  cd _pages
+                  git init
+                  git config user.name "CI"
+                  git config user.email "ci@fiduswriter.org"
+                  git add -A
+                  git commit -m "Deploy demo [skip ci]"
+                  git push -f "https://${{ secrets.PAGES_TOKEN }}@git.fiduswriter.org/${{ github.repository }}.git" HEAD:pages

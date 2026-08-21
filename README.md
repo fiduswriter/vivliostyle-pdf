@@ -233,11 +233,11 @@ Because the emitter writes the PDF itself, it can add structures that
 - **Viewer preferences**: `DisplayDocTitle` makes viewers show the
   document title (rather than the file name) in the window title bar.
 - **Source attachment (demo only)**: the demo embeds the pre-pagination HTML
-  source as a file attachment (`demo-document.html`, opt-in via
-  `EmitOptions.embedSourceHtml`), so the demo PDF is self-contained and its
-  source can be extracted with any PDF tool (`pdfdetach`, Acrobat's
-  attachments panel, etc.). Library consumers keep `sourceHtml` for font
-  discovery but do not get the attachment unless they ask for it.
+  source as a file attachment (`demo.html`, matching the downloaded PDF's
+  name), so the demo PDF is self-contained and its source can be extracted
+  with any PDF tool (`pdfdetach`, Acrobat's attachments panel, etc.).
+  `EmitOptions.embedSourceHtml` controls this: off by default, `true` for a
+  default `document.html` name, or a string to pick the attachment filename.
 
 ## Limitations
 

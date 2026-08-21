@@ -203,10 +203,11 @@ export interface EmitOptions {
     sourceHtml?: string
     /**
      * Whether to embed `sourceHtml` as a file attachment in the PDF. Off by
-     * default: most consumers do not want the HTML copy inside the PDF (it is
-     * a demo feature).
+     * default. Pass `true` to embed it under a default name
+     * ("document.html"), or a string to choose the attachment filename (e.g.
+     * "my-document.html").
      */
-    embedSourceHtml?: boolean
+    embedSourceHtml?: boolean | string
     /** Document metadata from the original HTML head. */
     metadata?: EmitMetadata
     /** Print-production options (crop marks, trim/bleed boxes). */
@@ -342,7 +343,9 @@ export async function emitPdfFromVivliostyleWindow(
     if (options?.sourceHtml && options?.embedSourceHtml) {
         await pdfDoc.attach(
             new TextEncoder().encode(options.sourceHtml),
-            "demo-document.html",
+            typeof options.embedSourceHtml === "string"
+                ? options.embedSourceHtml
+                : "document.html",
             {
                 mimeType: "text/html",
                 description:

@@ -351,8 +351,8 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
         string,
         {filename: string; description: string}
     > | null
-    expect(atts?.has("demo-document.html")).toBe(true)
-    const attContent = await doc2.getAttachmentContent("demo-document.html")
+    expect(atts?.has("demo.html")).toBe(true)
+    const attContent = await doc2.getAttachmentContent("demo.html")
     expect(attContent).not.toBeNull()
     const attHead = new TextDecoder()
         .decode(attContent!.subarray(0, 100))

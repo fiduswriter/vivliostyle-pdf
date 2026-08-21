@@ -104,7 +104,9 @@ function generate(): void {
                         setStatus,
                         {
                             sourceHtml: sourceArea.value,
-                            embedSourceHtml: true,
+                            // Embed the source under the same name as the
+                            // downloaded PDF, with an .html ending.
+                            embedSourceHtml: "demo.html",
                             metadata: {
                                 title:
                                     sourceDoc

@@ -77,7 +77,8 @@ DOM→PDF emitter (src/pdf-emitter.ts)
     the paginated document (inlined by the Fidus print exporter, with
     `documentstylefile_set` asset URLs already absolute) is discovered,
     fetched, normalized to embeddable sfnt bytes (WOFF unwrapped in pure JS;
-    WOFF2 skipped with a warning) and embedded subsetted via @pdfme/pdf-lib
+    WOFF2 decoded via fonteditor-core's WASM build of Google's woff2) and
+    embedded subsetted via @pdfme/pdf-lib
     + foliojs fontkit — then CSS font matching (family → style → weight
     band, vivliostyle `Fnt_n` aliases stripped) picks the right cut per text
     run. Identical fonts are embedded once (semantic dedup). Libertinus
@@ -119,6 +120,8 @@ src/demo-document.html      rich test document (paged CSS, TOC, footnotes,
 src/vivliostyle-print.d.ts  types for the untyped @vivliostyle/print
 public/fonts/               Libertinus Serif + Libertinus Mono TTFs (OFL) plus
                             Noto Sans Arabic/Hebrew test fonts (OFL)
+public/woff2/               the WOFF2 decoder WASM (woff2.wasm, served by the
+                            demo; also shipped in the npm package)
 public/images/              figure SVGs + generated PNG
 scripts/gen-assets.mjs      dependency-free PNG generator (node zlib)
 scripts/debug-run.mjs       dev helper: run generation, log console, save PDF
@@ -246,11 +249,41 @@ Because the emitter writes the PDF itself, it can add structures that
   4, vivliostyle `Fnt_n` aliases stripped). When nothing matches — or a
   configured font can't be embedded — text falls back to Libertinus Serif
   (Regular/Bold/Italic/BoldItalic) or Libertinus Mono Regular. WOFF is
-  unwrapped to sfnt in pure JS and embedded; **WOFF2 and font collections are
-  not yet embeddable** (they still influence layout via the browser, so
-  positions are right, but the glyphs come from the fallback font). To add a
-  fallback family, drop the TTFs into `public/fonts/` and extend
-  `FALLBACK_FONT_FILES` in `src/pdf-emitter.ts`.
+  unwrapped to sfnt in pure JS and embedded; WOFF2 is decoded to sfnt via
+  fonteditor-core's WASM decoder (see below). If a fallback font file is
+  missing/unfetchable it is skipped with a warning rather than failing the
+  export, so apps that do not serve them still export fine when the document's
+  own `@font-face` fonts cover the text. To add a fallback family, drop the
+  TTFs into `public/fonts/` and extend `FALLBACK_FONT_FILES` in
+  `src/pdf-emitter.ts`.
+
+## WOFF2 support and the decoder WASM
+
+WOFF2 fonts are decoded to sfnt using
+[`fonteditor-core`](https://github.com/kekee000/fonteditor-core)'s WASM build
+of Google's [woff2](https://github.com/google/woff2) reference decoder, so
+WOFF2 `@font-face` fonts are embedded with their real glyphs. The decoder is
+loaded **lazily** (only when a WOFF2 font is encountered) and **gracefully** —
+if the WASM cannot be loaded, WOFF2 fonts fall back to the bundled fallback
+fonts with a warning instead of failing the export.
+
+The decoder WASM (`woff2.wasm`, ~710 KiB) is served like any other static
+asset; `emitPdfFromVivliostyleWindow()` locates it in this order:
+
+1. `EmitOptions.woff2WasmUrl` — a URL string, or the raw wasm bytes as an
+   `ArrayBuffer`. This is what applications should pass when they serve the
+   wasm themselves (e.g. Fidus Writer serves it from its static files).
+2. `<EmitOptions.baseUrl>woff2/woff2.wasm` — the `baseUrl` option (defaults to
+   Vite's `BASE_URL` in the demo build, or the consuming page's base URL).
+   The demo ships the wasm at `public/woff2/woff2.wasm`, so it resolves
+   automatically on GitHub Pages and in the local demo.
+3. In Node (e.g. tests), `fonteditor-core` resolves its own packaged
+   `woff2.wasm` from inside the package, so no configuration is needed.
+
+Consumers that bundle `vivliostyle-pdf` with a non-Vite toolchain (rspack,
+webpack, tsc) should either pass `woff2WasmUrl`/`baseUrl` or copy the wasm
+(available in the published package under `public/woff2/woff2.wasm`) to a
+served location.
 - **Small caps are synthesized**: lowercase is drawn as uppercase at 80% size,
   fitted to the measured width; real `smcp` glyph substitution isn't available
   through pdf-lib/@pdfme/pdf-lib.
@@ -277,8 +310,8 @@ Because the emitter writes the PDF itself, it can add structures that
 - Math via MathLive/SVG (inline + display equations) instead of native MathML
   token copying.
 - Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks
-  them), WOFF2 embedding, `unicode-range`, `size-adjust`/descent-override
-  descriptors, OpenType feature control.
+  them), TrueType collections (.ttc), `unicode-range`,
+  `size-adjust`/descent-override descriptors, OpenType feature control.
 - Keep SVGs vector (@pdfme/pdf-lib `page.drawSvg()` drops `<marker>` arrowheads
   and sizes `<text>` with fallback metrics today) and follow the CSS paint-order
   spec for overlapping content.

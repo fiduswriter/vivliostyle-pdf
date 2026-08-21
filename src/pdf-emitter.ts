@@ -42,11 +42,38 @@ import {
     selectFontFace,
     type FontFaceDescriptor
 } from "./font-face.js"
-import {normalizeFontBytes, sfntTableSignature} from "./font-formats.js"
+import {
+    normalizeFontBytes,
+    setWoff2WasmUrl,
+    sfntTableSignature
+} from "./font-formats.js"
 import {splitBidiRuns} from "./bidi.js"
 import {drawSvg} from "svg4pdf-lib"
 
 const PX_TO_PT = 0.75
+
+/**
+ * Resolve the base URL for the library's own static assets (bundled fallback
+ * fonts, woff2.wasm). Uses Vite's `BASE_URL` when a Vite build injects it
+ * (the demo), otherwise falls back to the consuming page's base URL. Callers
+ * can pin an explicit base via `EmitOptions.baseUrl`.
+ */
+function getBaseUrl(optionsBase?: string): string {
+    try {
+        if (optionsBase) {
+            return new URL(optionsBase, window.location.href).href
+        }
+        // Vite statically replaces `import.meta.env.BASE_URL` at build time;
+        // in a plain ESM bundle (tsc/rspack) `import.meta.env` is undefined.
+        const viteBase = import.meta.env?.BASE_URL
+        if (viteBase) {
+            return new URL(viteBase, window.location.href).href
+        }
+    } catch {
+        // import.meta.env is a Vite construct; absent in plain ESM builds.
+    }
+    return new URL(".", document.baseURI || window.location.href).href
+}
 
 type FontCut = "regular" | "bold" | "italic" | "boldItalic"
 
@@ -137,6 +164,10 @@ export interface EmitMetadata {
     /** comma-separated */
     keywords?: string
     language?: string
+    /** PDF /Creator string. Defaults to the library's own string. */
+    creator?: string
+    /** PDF /Producer string. Defaults to the library's own string. */
+    producer?: string
 }
 
 export interface PrintOptions {
@@ -154,6 +185,14 @@ export interface PrintOptions {
     rasterizeSvgs?: boolean
 }
 
+/** A file to embed as a PDF attachment (e.g. a Fidus .fidus source file). */
+export interface EmitAttachment {
+    filename: string
+    bytes: Uint8Array | ArrayBuffer
+    mimeType: string
+    description?: string
+}
+
 /** Optional extras for emitPdfFromVivliostyleWindow. */
 export interface EmitOptions {
     /** The document's HTML source, embedded as a file attachment. */
@@ -162,6 +201,18 @@ export interface EmitOptions {
     metadata?: EmitMetadata
     /** Print-production options (crop marks, trim/bleed boxes). */
     printOptions?: PrintOptions
+    /**
+     * Base URL for the library's bundled static assets (fallback fonts,
+     * woff2.wasm). Defaults to Vite's BASE_URL (demo) or the page base URL.
+     */
+    baseUrl?: string
+    /**
+     * Where the WOFF2 decoder's wasm lives: a URL string or an `ArrayBuffer`
+     * of the wasm bytes. Defaults to `<baseUrl>woff2/woff2.wasm`.
+     */
+    woff2WasmUrl?: string | ArrayBuffer
+    /** Additional files to attach to the PDF (besides `sourceHtml`). */
+    attachments?: EmitAttachment[]
 }
 
 /**
@@ -211,11 +262,13 @@ export async function emitPdfFromVivliostyleWindow(
     )
 
     onProgress?.("Loading fonts…")
-    const fonts = await loadFontSelectionContext(
-        pdfDoc,
-        win,
-        options?.sourceHtml
+    const base = getBaseUrl(options?.baseUrl)
+    // Point the WOFF2 decoder at the wasm the caller (or the default base)
+    // provides. Done before font loading so WOFF2 fonts can be embedded.
+    setWoff2WasmUrl(
+        options?.woff2WasmUrl ?? new URL("woff2/woff2.wasm", base).href
     )
+    const fonts = await loadFontSelectionContext(pdfDoc, win, options, base)
 
     // Link collection runs alongside page emission. Internal (#id) links
     // need their target's page, which may come later — so anchor targets
@@ -271,12 +324,12 @@ export async function emitPdfFromVivliostyleWindow(
     }
     addLinkAnnotations(pdfDoc, links, anchorTargets, printOptions.linkAnnotationBorders)
 
-    // Beyond-the-print-dialog extras: metadata, bookmarks, attachment.
+    // Beyond-the-print-dialog extras: metadata, bookmarks, attachments.
     onProgress?.("Adding metadata, outline and attachment…")
     addMetadata(pdfDoc, options?.metadata ?? {})
     buildOutline(pdfDoc, headings)
+    const now = new Date()
     if (options?.sourceHtml) {
-        const now = new Date()
         await pdfDoc.attach(
             new TextEncoder().encode(options.sourceHtml),
             "demo-document.html",
@@ -284,6 +337,20 @@ export async function emitPdfFromVivliostyleWindow(
                 mimeType: "text/html",
                 description:
                     "HTML source of this document (before vivliostyle pagination)",
+                creationDate: now,
+                modificationDate: now
+            }
+        )
+    }
+    for (const attachment of options?.attachments ?? []) {
+        await pdfDoc.attach(
+            attachment.bytes instanceof ArrayBuffer
+                ? new Uint8Array(attachment.bytes)
+                : attachment.bytes,
+            attachment.filename,
+            {
+                mimeType: attachment.mimeType,
+                description: attachment.description,
                 creationDate: now,
                 modificationDate: now
             }
@@ -306,21 +373,25 @@ function isEmptyPage(container: HTMLElement): boolean {
 /**
  * Discover `@font-face` rules (from the paginated document, or — when the
  * iframe did not retain them — from the source HTML), fetch each unique font
- * file, normalize it to embeddable sfnt bytes (WOFF unwrapped; WOFF2 skipped
- * with a warning) and embed it subsetted. The bundled fallback fonts are
+ * file, normalize it to embeddable sfnt bytes (WOFF unwrapped; WOFF2 decoded
+ * via fonteditor-core) and embed it subsetted. The bundled fallback fonts are
  * embedded too, deduplicated against the discovered ones by content hash.
+ * Missing fallback fonts are skipped with a warning rather than aborting, so
+ * an app that does not serve them still exports fine when the document's own
+ * `@font-face` fonts cover the text.
  */
 async function loadFontSelectionContext(
     pdfDoc: PDFDocument,
     win: Window,
-    sourceHtml: string | undefined
+    options: EmitOptions | undefined,
+    base: string
 ): Promise<FontSelectionContext> {
-    const base = new URL(import.meta.env.BASE_URL, window.location.href).href
+    const sourceHtml = options?.sourceHtml
     const rules = collectFontFaceRules(win.document, win.document.baseURI)
     const allRules =
         rules.length > 0
             ? rules
-            : collectFontFaceRules(parseSourceDocument(sourceHtml), base)
+            : collectFontFaceRules(parseSourceDocument(sourceHtml, base), base)
 
     const byKey = new Map<FontKey, LoadedFont>()
     const semanticToKey = new Map<string, FontKey>()
@@ -404,24 +475,29 @@ async function loadFontSelectionContext(
     }
 
     // Bundled fallbacks — deduplicated against discovered fonts by content.
+    // Each cut is optional: a missing/unfetchable fallback font is skipped
+    // with a warning instead of aborting the export (the document's own
+    // @font-face fonts normally cover the text anyway).
     const fallback = new Map<string, Partial<Record<FontCut, FontKey>>>()
     for (const [generic, cuts] of Object.entries(FALLBACK_FONT_FILES)) {
         const keyedCuts: Partial<Record<FontCut, FontKey>> = {}
         for (const [cut, path] of Object.entries(cuts)) {
-            const response = await fetch(new URL(path, base))
-            if (!response.ok) {
-                throw new Error(
-                    `Failed to fetch fallback font ${path}: ${response.status}`
+            try {
+                const response = await fetch(new URL(path, base))
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`)
+                }
+                const bytes = new Uint8Array(await response.arrayBuffer())
+                const result = await embedBytes(bytes)
+                if ("reason" in result) {
+                    throw new Error(result.reason)
+                }
+                keyedCuts[cut as FontCut] = result.key
+            } catch (error) {
+                console.warn(
+                    `vivliostyle-pdf: fallback font ${path} unavailable (${error instanceof Error ? error.message : String(error)}); that cut will not be used`
                 )
             }
-            const bytes = new Uint8Array(await response.arrayBuffer())
-            const result = await embedBytes(bytes)
-            if ("reason" in result) {
-                throw new Error(
-                    `Failed to embed fallback font ${path}: ${result.reason}`
-                )
-            }
-            keyedCuts[cut as FontCut] = result.key
         }
         fallback.set(generic, keyedCuts)
     }
@@ -441,14 +517,13 @@ async function loadFontSelectionContext(
 }
 
 /** Parse the (pre-pagination) source HTML so its <style> @font-face rules
-    can be enumerated when the iframe document dropped them. */
+    can be enumerated when the iframe document dropped them. Any demo-only
+    `__BASE__` placeholder is expanded against the resolved base URL. */
 function parseSourceDocument(
-    sourceHtml: string | undefined
+    sourceHtml: string | undefined,
+    baseUrl: string
 ): Document {
-    const expanded = (sourceHtml ?? "").replaceAll(
-        "__BASE__",
-        import.meta.env.BASE_URL
-    )
+    const expanded = (sourceHtml ?? "").replaceAll("__BASE__", baseUrl)
     return new DOMParser().parseFromString(expanded, "text/html")
 }
 
@@ -950,9 +1025,9 @@ function addMetadata(pdfDoc: PDFDocument, meta: EmitMetadata): void {
         )
     }
     pdfDoc.setCreator(
-        "vivliostyle-pdf prototype (vivliostyle + DOM-to-PDF emitter)"
+        meta.creator ?? "vivliostyle-pdf (vivliostyle + DOM-to-PDF emitter)"
     )
-    pdfDoc.setProducer("@pdfme/pdf-lib 6.1 + fontkit 2")
+    pdfDoc.setProducer(meta.producer ?? "@pdfme/pdf-lib + fontkit")
     pdfDoc.setLanguage(meta.language ?? "en-US")
     const now = new Date()
     pdfDoc.setCreationDate(now)

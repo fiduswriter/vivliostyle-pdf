@@ -14,6 +14,9 @@ importers:
       '@vivliostyle/print':
         specifier: ^2.44.1
         version: 2.44.1
+      fonteditor-core:
+        specifier: ^2.6.3
+        version: 2.6.3
       fontkit:
         specifier: ^2.0.4
         version: 2.0.4
@@ -441,6 +444,10 @@ packages:
   '@vivliostyle/print@2.44.1':
     resolution: {integrity: sha512-tqmj1TToxm+qwkM7oY76PH3/+oO9k3UcuMKkQd0A3w9WyIxerWgdlI32Nlb1rVWQSeQFYhAujq9EU/Bvfs5FvQ==}
 
+  '@xmldom/xmldom@0.8.14':
+    resolution: {integrity: sha512-T4EDRUBVZYRldYApjEJiU0e1stYWaRAX7CuSnKzrpwdZKo53zGV8/pqfzV6FfwNl9YThD2OumQYvqtvjvgG7aQ==}
+    engines: {node: '>=10.0.0'}
+
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
@@ -486,6 +493,9 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  fonteditor-core@2.6.3:
+    resolution: {integrity: sha512-YUryIKjkenjZ41E7JvM3V+02Ak4mTHDDTwBWgs9KBzypzHqLZHuua1UDRevZNTKawmnq1dbBAa70Jddl2+F4FQ==}
 
   fontkit@2.0.4:
     resolution: {integrity: sha512-syetQadaUEDNdxdugga9CpEYVaQIxOwk7GlwZWWZ19//qW4zE5bknOKeMBDYAASwnpaSHKJITRLMF9m1fp3s6g==}
@@ -867,6 +877,8 @@ snapshots:
 
   '@vivliostyle/print@2.44.1': {}
 
+  '@xmldom/xmldom@0.8.14': {}
+
   base64-js@1.5.1: {}
 
   brotli@1.3.3:
@@ -926,6 +938,10 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
       picomatch: 4.0.5
+
+  fonteditor-core@2.6.3:
+    dependencies:
+      '@xmldom/xmldom': 0.8.14
 
   fontkit@2.0.4:
     dependencies:

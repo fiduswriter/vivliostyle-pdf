@@ -34,7 +34,9 @@
     "files": [
         "lib",
         "LICENSE",
-        "README.md"
+        "README.md",
+        "public/fonts",
+        "public/woff2"
     ],
     "scripts": {
         "dev": "vite",
@@ -48,6 +50,7 @@
     "dependencies": {
         "@pdfme/pdf-lib": "^6.1.12",
         "@vivliostyle/print": "^2.44.1",
+        "fonteditor-core": "^2.6.3",
         "fontkit": "^2.0.4",
         "svg4pdf-lib": "^0.1.1"
     },

@@ -4,13 +4,91 @@
  *
  * pdf-lib embeds the raw bytes it is given verbatim
  * (`CustomFontEmbedder.serializeFont()` returns the input), so a PDF font
- * program must be a real sfnt binary. WOFF must therefore be unwrapped back
- * into an sfnt file; WOFF2 is not yet supported (fontkit can still decode it
- * for layout, so measured positions stay correct while the fallback font
- * covers the glyphs).
+ * program must be a real sfnt binary. WOFF is therefore unwrapped back into an
+ * sfnt file; WOFF2 is decoded with fonteditor-core's WASM build of Google's
+ * woff2 decoder. TrueType collections are not supported.
  */
+import {woff2} from "fonteditor-core"
 
 export type FontFormat = "ttf" | "otf" | "woff" | "woff2" | "ttc" | "unknown"
+
+/**
+ * The location of the WOFF2 decoder's WASM binary. In the browser this must be
+ * reachable (a URL string, or the raw `ArrayBuffer` of the wasm); in Node the
+ * package's own `woff2.wasm` is resolved automatically. Set via
+ * `setWoff2WasmUrl()` before decoding the first WOFF2 font.
+ */
+let woff2WasmUrl: string | ArrayBuffer | null = null
+
+/** One initialized WOFF2 decoder module (lazy, cached). */
+let woff2InitPromise: Promise<boolean> | null = null
+
+/**
+ * Configure where the WOFF2 decoder's wasm lives. Accepts a URL string or the
+ * wasm's raw bytes as an `ArrayBuffer`. Passing `null` reverts to the default
+ * (Node: the package's own `woff2.wasm`; browser: derived from the page base).
+ */
+export function setWoff2WasmUrl(url: string | ArrayBuffer | null): void {
+    woff2WasmUrl = url
+    woff2InitPromise = null // force re-initialization with the new location
+}
+
+const WOFF2_INIT_TIMEOUT_MS = 20_000
+
+/** Initialize the WOFF2 decoder once, with a timeout so a missing wasm
+    degrades gracefully instead of hanging the export. */
+async function initWoff2(): Promise<boolean> {
+    if (woff2InitPromise) {
+        return woff2InitPromise
+    }
+    woff2InitPromise = (async () => {
+        try {
+            await Promise.race([
+                woff2.init(woff2WasmUrl ?? undefined),
+                new Promise<never>((_resolve, reject) =>
+                    setTimeout(
+                        () => reject(new Error("WOFF2 decoder init timed out")),
+                        WOFF2_INIT_TIMEOUT_MS
+                    )
+                )
+            ])
+            return true
+        } catch (error) {
+            console.warn(
+                `vivliostyle-pdf: WOFF2 decoder unavailable (${error instanceof Error ? error.message : String(error)}); WOFF2 fonts will fall back to the bundled fallback fonts`
+            )
+            return false
+        }
+    })()
+    return woff2InitPromise
+}
+
+/**
+ * Decode a WOFF2 font into sfnt (TrueType/OpenType) bytes using
+ * fonteditor-core's WASM decoder. Returns `null` when the decoder is
+ * unavailable or the bytes are not a valid WOFF2 font.
+ */
+export async function woff2ToSfnt(bytes: Uint8Array): Promise<Uint8Array | null> {
+    if (!(await initWoff2())) {
+        return null
+    }
+    try {
+        // fonteditor-core types decode's input as `number[]`; at runtime it
+        // accepts any array-like (it wraps in `new Uint8Array(...)`).
+        const ttf = woff2.decode(bytes as unknown as number[])
+        // A valid sfnt needs at least the 12-byte offset table; the Google
+        // decoder returns empty bytes for malformed input.
+        if (ttf.byteLength < 12) {
+            return null
+        }
+        return new Uint8Array(ttf)
+    } catch (error) {
+        console.warn(
+            `vivliostyle-pdf: WOFF2 decode failed (${error instanceof Error ? error.message : String(error)})`
+        )
+        return null
+    }
+}
 
 /** Four-byte tag at the start of a font file. */
 function tag(bytes: Uint8Array): string {
@@ -77,7 +155,7 @@ export type NormalizeResult =
 /**
  * Normalize arbitrary font bytes (data URI payload or fetched file) to
  * embeddable sfnt bytes. Returns an error object for formats we cannot embed
- * (WOFF2, TrueType collections, unknown binaries).
+ * (TrueType collections, unknown binaries) or when WOFF2 decoding fails.
  */
 export async function normalizeFontBytes(
     bytes: Uint8Array
@@ -95,8 +173,17 @@ export async function normalizeFontBytes(
                 format: detectFontFormat(sfnt) === "otf" ? "otf" : "ttf"
             }
         }
-        case "woff2":
-            return {ok: false, reason: "WOFF2 fonts are not supported yet"}
+        case "woff2": {
+            const sfnt = await woff2ToSfnt(bytes)
+            if (!sfnt) {
+                return {ok: false, reason: "WOFF2 decoding failed"}
+            }
+            return {
+                ok: true,
+                bytes: sfnt,
+                format: detectFontFormat(sfnt) === "otf" ? "otf" : "ttf"
+            }
+        }
         case "ttc":
             return {
                 ok: false,

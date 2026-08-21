@@ -8,6 +8,7 @@
 export {
     emitPdfFromVivliostyleWindow,
     type DecorationStyle,
+    type EmitAttachment,
     type EmitMetadata,
     type EmitOptions,
     type PrintOptions

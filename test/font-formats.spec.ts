@@ -166,11 +166,29 @@ test("normalizeFontBytes embeds TTF directly and unwraps WOFF", async () => {
         expect(unwrapped.format).toBe("ttf")
     }
 
-    const woff2 = await normalizeFontBytes(
-        new Uint8Array([0x77, 0x4f, 0x46, 0x32])
-    )
-    expect(woff2.ok).toBe(false)
-
     const junk = await normalizeFontBytes(new Uint8Array([0xff, 0xfe]))
     expect(junk.ok).toBe(false)
+})
+
+test("normalizeFontBytes decodes a real WOFF2 font via fonteditor-core", async () => {
+    const ttf = await readFile("public/fonts/LibertinusSerif-Regular.ttf")
+    const {woff2} = await import("fonteditor-core")
+    // Node: fonteditor-core resolves its own packaged woff2.wasm.
+    await woff2.init()
+    const woff2Bytes = woff2.encode(new Uint8Array(ttf) as unknown as number[])
+
+    // The encode→decode round-trip produces a valid sfnt with matching metrics.
+    const decoded = await normalizeFontBytes(new Uint8Array(woff2Bytes))
+    expect(decoded.ok).toBe(true)
+    if (decoded.ok) {
+        expect(checksum(Buffer.from(decoded.bytes))).toBe(0xb1b0afba)
+        expect(Buffer.from(decoded.bytes).readUInt32BE(0)).toBe(0x00010000)
+        expect(decoded.format).toBe("ttf")
+    }
+
+    // Garbage with only the wOF2 magic must degrade gracefully.
+    const bad = await normalizeFontBytes(
+        new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0x00])
+    )
+    expect(bad.ok).toBe(false)
 })

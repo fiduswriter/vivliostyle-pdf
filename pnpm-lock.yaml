@@ -21,8 +21,8 @@ importers:
         specifier: ^2.0.4
         version: 2.0.4
       svg4pdf-lib:
-        specifier: ^0.1.1
-        version: 0.1.1(@pdfme/pdf-lib@6.1.12)
+        specifier: ^0.1.2
+        version: 0.1.2(@pdfme/pdf-lib@6.1.12)
     devDependencies:
       '@playwright/test':
         specifier: ^1.49.0
@@ -570,8 +570,8 @@ packages:
   svg-for-pdfkit@0.2.1:
     resolution: {integrity: sha512-2vAj/EjcDt98m1PM6cFjlyNTqf4FhDtgtUZksuIz/sH9vQOpKpMcGBqGgljCz3DQDmh/o/qSAEWbOiicFHh1ig==}
 
-  svg4pdf-lib@0.1.1:
-    resolution: {integrity: sha512-h+gX5FZ2wG9fW9/LeTQFW+l3PmAChzzkfh2SbZiwPxm8uhjhalStHYHk6tQ0dEvrnkOCYvUzKTA4xgbE09cpPg==}
+  svg4pdf-lib@0.1.2:
+    resolution: {integrity: sha512-SuWUveOKKK2npwjWoQdcau/CbHDi//CqMYVgXRmRFcwYFpHe1cJiXEC3+UG+lVdKVgU38LZ/z8VsvN3JtljqnA==}
     peerDependencies:
       '@pdfme/pdf-lib': ^6.1.0
 
@@ -1035,7 +1035,7 @@ snapshots:
 
   svg-for-pdfkit@0.2.1: {}
 
-  svg4pdf-lib@0.1.1(@pdfme/pdf-lib@6.1.12):
+  svg4pdf-lib@0.1.2(@pdfme/pdf-lib@6.1.12):
     dependencies:
       '@pdf-lib/upng': 1.0.1
       '@pdfme/pdf-lib': 6.1.12

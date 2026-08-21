@@ -127,6 +127,7 @@ scripts/gen-assets.mjs      dependency-free PNG generator (node zlib)
 scripts/debug-run.mjs       dev helper: run generation, log console, save PDF
 test/e2e.spec.ts            Playwright end-to-end test
 test/math.spec.ts           MathML translation verification (known gap)
+test/math-svg.spec.ts       SVG-based math renders as vector paint ops
 test/fonts.spec.ts          dynamic font resolution e2e (matching, WOFF, dedup)
 test/font-formats.spec.ts   node tests for font sniffing + WOFF round-trip
 test/bidi.spec.ts           node tests for the bidi-run splitter
@@ -309,8 +310,10 @@ served location.
   regress sized runs (see FEATURES.md §9).
 - Border-radius on bordered outlines (backgrounds are rounded already);
   groove/ridge/inset/outset border styles; box-shadow/text-shadow/outline.
-- Math via MathLive/SVG (inline + display equations) instead of native MathML
-  token copying.
+- Math: native MathML is still only token-copied (see test/math.spec.ts), so
+  producers should render formulas as SVG `<img>`s — the Fidus Writer HTML
+  exporter does this (`mathOutput: "svg"`, MathJax tex2svg) and the emitter
+  draws them as vector ops (see test/math-svg.spec.ts).
 - Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks
   them), TrueType collections (.ttc), `unicode-range`,
   `size-adjust`/descent-override descriptors, OpenType feature control.

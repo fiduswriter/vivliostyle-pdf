@@ -768,11 +768,12 @@
             approximations, small caps are drawn as scaled uppercase glyphs
             rather than real <code>smcp</code> substitutions, and hyphens
             inserted by browser hyphenation would not be reproduced. Math is
-            not yet translated faithfully: MathML's fraction bars, radicals
-            and stretchy delimiters are painted by the engine rather than
-            emitted as tokens, and are best served by exporting MathLive SVG
-            from the source exporter. Tagged PDF and PDF/A output remain out
-            of scope.
+            not translated faithfully from native MathML (its fraction bars,
+            radicals and stretchy delimiters are painted by the engine rather
+            than emitted as tokens), so formulas are best produced as SVG
+            images — the Fidus Writer exporter emits MathJax SVG `<img>`s for
+            this — which the emitter then draws as vector ops. Tagged PDF and
+            PDF/A output remain out of scope.
         </p>
         <p>
             None of these limitations is fundamental. Baselines can be taken

@@ -1,6 +1,6 @@
 {
     "name": "vivliostyle-pdf",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "Browser-only PDF export via vivliostyle pagination + custom DOM-to-PDF emitter",
     "type": "module",
     "license": "LGPL-3.0-or-later",

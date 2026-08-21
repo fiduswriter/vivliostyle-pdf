@@ -104,6 +104,7 @@ function generate(): void {
                         setStatus,
                         {
                             sourceHtml: sourceArea.value,
+                            embedSourceHtml: true,
                             metadata: {
                                 title:
                                     sourceDoc

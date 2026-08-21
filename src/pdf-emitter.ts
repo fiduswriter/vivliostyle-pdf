@@ -195,8 +195,18 @@ export interface EmitAttachment {
 
 /** Optional extras for emitPdfFromVivliostyleWindow. */
 export interface EmitOptions {
-    /** The document's HTML source, embedded as a file attachment. */
+    /**
+     * The document's HTML source. Used for `@font-face` discovery when the
+     * paginated iframe did not retain them. Only embedded as a PDF attachment
+     * when `embedSourceHtml` is set.
+     */
     sourceHtml?: string
+    /**
+     * Whether to embed `sourceHtml` as a file attachment in the PDF. Off by
+     * default: most consumers do not want the HTML copy inside the PDF (it is
+     * a demo feature).
+     */
+    embedSourceHtml?: boolean
     /** Document metadata from the original HTML head. */
     metadata?: EmitMetadata
     /** Print-production options (crop marks, trim/bleed boxes). */
@@ -329,7 +339,7 @@ export async function emitPdfFromVivliostyleWindow(
     addMetadata(pdfDoc, options?.metadata ?? {})
     buildOutline(pdfDoc, headings)
     const now = new Date()
-    if (options?.sourceHtml) {
+    if (options?.sourceHtml && options?.embedSourceHtml) {
         await pdfDoc.attach(
             new TextEncoder().encode(options.sourceHtml),
             "demo-document.html",

@@ -6,11 +6,13 @@
  * API-compatible, maintained fork of pdf-lib). No browser print dialog is
  * involved.
  *
- * Scope of this prototype: text (word-precise positions), embedded
- * Libertinus Serif/Mono with subsetting, PNG/JPEG images, SVG images
- * (rasterized), solid background-color rects and simple solid borders, and
- * link annotations (external URI actions, internal GoTo destinations)
- * hand-built via the low-level PDF object API.
+ * Scope of this prototype: text (word-precise positions), embedded fonts
+ * (Libertinus Serif / JetBrains Mono / DejaVu Sans bundled fallbacks, plus
+ * the document's own @font-face fonts) with subsetting and per-glyph
+ * fallback, PNG/JPEG images, SVG images (rasterized), solid
+ * background-color rects and simple solid borders, and link annotations
+ * (external URI actions, internal GoTo destinations) hand-built via the
+ * low-level PDF object API.
  *
  * Coordinate systems:
  *  - Browser DOM: origin top-left, units CSS px.
@@ -19,6 +21,7 @@
  *  Y is flipped when drawing.
  */
 import * as fontkit from "fontkit"
+import type {FontkitFont} from "fontkit"
 import {
     PDFDocument,
     PDFDict,
@@ -38,7 +41,10 @@ import {
 } from "./pdf-lib-ops.js"
 import {
     collectFontFaceRules,
+    GENERIC_FAMILY_NAMES,
+    normalizeFamily,
     parseFontFamilyList,
+    rankCandidates,
     selectFontFace,
     type FontFaceDescriptor
 } from "./font-face.js"
@@ -77,7 +83,12 @@ function getBaseUrl(optionsBase?: string): string {
 
 type FontCut = "regular" | "bold" | "italic" | "boldItalic"
 
-/** Bundled fallback fonts (used when no @font-face rule matches a run). */
+/**
+ * Bundled fallback fonts (used when no @font-face rule matches a run), plus
+ * the "universal" last-resort bucket used for per-glyph fallback: when the
+ * selected run font cannot render a code point, these fonts are searched for
+ * one that can.
+ */
 const FALLBACK_FONT_FILES: Record<string, Partial<Record<FontCut, string>>> = {
     serif: {
         regular: "fonts/LibertinusSerif-Regular.ttf",
@@ -86,14 +97,22 @@ const FALLBACK_FONT_FILES: Record<string, Partial<Record<FontCut, string>>> = {
         boldItalic: "fonts/LibertinusSerif-BoldItalic.ttf"
     },
     monospace: {
-        regular: "fonts/LibertinusMono-Regular.ttf"
+        regular: "fonts/JetBrainsMono-Regular.ttf",
+        bold: "fonts/JetBrainsMono-Bold.ttf"
+    },
+    // Broadest glyph coverage of the bundled set. Served by this library's
+    // own demo/tests; apps that do not ship it simply lose this last-resort
+    // tier (a missing file is skipped silently).
+    universal: {
+        regular: "fonts/DejaVuSans.ttf"
     }
 }
 
 /** Cut fallback order per generic fallback family. */
 const FALLBACK_ORDER: Record<string, FontCut[]> = {
     serif: ["regular", "italic", "bold", "boldItalic"],
-    monospace: ["regular"]
+    monospace: ["regular", "bold"],
+    universal: ["regular"]
 }
 
 interface FontMetrics {
@@ -107,6 +126,8 @@ interface LoadedFont {
     pdfFont: PDFFont
     metrics: FontMetrics
     key: FontKey
+    /** fontkit instance of the same font file — used for glyph coverage queries. */
+    fkFont: FontkitFont
 }
 
 /** Stable key identifying an embedded font file. */
@@ -122,8 +143,10 @@ interface FontSelectionContext {
     keyByRule: Map<FontFaceDescriptor, FontKey>
     /** every embedded font (discovered + fallback), keyed by FontKey. */
     byKey: Map<FontKey, LoadedFont>
-    /** bundled last-resort fonts per generic family (serif / monospace). */
+    /** bundled last-resort fonts per generic family (serif / monospace / universal). */
     fallback: Map<string, Partial<Record<FontCut, FontKey>>>
+    /** memoizes per-glyph fallback resolutions across runs. */
+    glyphFallbackCache: Map<string, FontKey | null>
 }
 
 export type DecorationStyle = "solid" | "double" | "dotted" | "dashed" | "wavy"
@@ -141,6 +164,10 @@ interface TextDecoration {
 }
 
 interface WordRun {
+    /** Segments of the run, each drawn with its own font (per-glyph
+        fallback splits runs when the primary font lacks a glyph). */
+    segments: WordSegment[]
+    /** Full run text (concatenation of the segment texts). */
     text: string
     /** rect relative to the page container, in px */
     x: number
@@ -153,6 +180,12 @@ interface WordRun {
     decoration: TextDecoration
     /** synthesize small caps: lowercase drawn as uppercase at reduced size */
     smallCaps: boolean
+}
+
+/** A piece of a word run drawn with a single embedded font. */
+interface WordSegment {
+    text: string
+    fontKey: FontKey
 }
 
 /** Document metadata to embed (sourced from the original HTML head — the
@@ -439,6 +472,7 @@ async function loadFontSelectionContext(
         byKey.set(key, {
             key,
             pdfFont,
+            fkFont,
             metrics: {
                 ascent: sizePx => (fkFont.ascent / unitsPerEm) * sizePx,
                 descent: sizePx =>
@@ -507,9 +541,11 @@ async function loadFontSelectionContext(
                 }
                 keyedCuts[cut as FontCut] = result.key
             } catch (error) {
-                console.warn(
-                    `vivliostyle-pdf: fallback font ${path} unavailable (${error instanceof Error ? error.message : String(error)}); that cut will not be used`
-                )
+                if (generic !== "universal") {
+                    console.warn(
+                        `vivliostyle-pdf: fallback font ${path} unavailable (${error instanceof Error ? error.message : String(error)}); that cut will not be used`
+                    )
+                }
             }
         }
         fallback.set(generic, keyedCuts)
@@ -526,7 +562,7 @@ async function loadFontSelectionContext(
         )
     }
 
-    return {rules: allRules, keyByRule, byKey, fallback}
+    return {rules: allRules, keyByRule, byKey, fallback, glyphFallbackCache: new Map()}
 }
 
 /** Parse the (pre-pagination) source HTML so its <style> @font-face rules
@@ -577,6 +613,14 @@ function fnv1a(input: string): string {
     return (hash >>> 0).toString(36)
 }
 
+/** The FontCut a run's weight/style combination maps to. */
+function requestedCutFor(fontWeight: string, fontStyle: string): FontCut {
+    const numeric = Number.parseFloat(fontWeight)
+    const bold = Number.isNaN(numeric) ? fontWeight === "bold" : numeric >= 600
+    const italic = fontStyle === "italic" || fontStyle === "oblique"
+    return bold && italic ? "boldItalic" : bold ? "bold" : italic ? "italic" : "regular"
+}
+
 /**
  * Resolve which embedded font to draw a text run in, using CSS font matching
  * over the discovered `@font-face` rules and falling back to the bundled
@@ -604,18 +648,7 @@ function resolveRunFontKey(
     }
     const isMono = familyList.some(family => /mono/i.test(family))
     const generic = isMono ? "monospace" : "serif"
-    const italic = fontStyle === "italic" || fontStyle === "oblique"
-    const bold = Number.isNaN(weight)
-        ? fontWeight === "bold"
-        : weight >= 600
-    const requestedCut: FontCut =
-        bold && italic
-            ? "boldItalic"
-            : bold
-              ? "bold"
-              : italic
-                ? "italic"
-                : "regular"
+    const requestedCut = requestedCutFor(fontWeight, fontStyle)
     const cutOrder = [
         requestedCut,
         ...FALLBACK_ORDER[generic].filter(cut => cut !== requestedCut)
@@ -631,6 +664,183 @@ function resolveRunFontKey(
         }
     }
     throw new Error("No fallback font available")
+}
+
+/** Unicode default-ignorable/format characters: they never render by
+    themselves, so they always stay in the primary font instead of triggering
+    a fallback font switch. */
+const FORMAT_CODE_POINTS = new Set(
+    [
+        0x200b, 0x200c, 0x200d, 0x200e, 0x200f, // zero-width chars, joiners, bidi marks
+        0x202a, 0x202b, 0x202c, 0x202d, 0x202e, // bidi embedding controls
+        0x2060, 0x2061, 0x2062, 0x2063, 0x2064, // word joiner, invisible operators
+        0xfeff // BOM / zero-width no-break space
+    ]
+)
+
+function fontHasGlyph(font: LoadedFont | undefined, codePoint: number): boolean {
+    if (!font) {
+        return false
+    }
+    try {
+        return font.fkFont.hasGlyphForCodePoint(codePoint)
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Find an embedded font that can render one code point the primary font
+ * lacks — mirroring how browsers walk the rest of the `font-family` list
+ * before falling back to other available fonts. Resolution order:
+ *
+ * 1. the families of the run's computed `font-family` list, in order (only
+ *    embedded `@font-face` faces; best style/weight match that covers the
+ *    code point);
+ * 2. the bundled fallback buckets: the run's own generic first, then the
+ *    others, then the "universal" last-resort bucket;
+ * 3. any other embedded font with coverage.
+ *
+ * Returns null when nothing covers the code point (the primary font stays,
+ * rendering `.notdef`).
+ */
+function resolveGlyphFallbackFontKey(
+    ctx: FontSelectionContext,
+    fontFamily: string,
+    fontWeight: string,
+    fontStyle: string,
+    primaryKey: FontKey,
+    codePoint: number
+): FontKey | null {
+    const cacheKey = `${primaryKey}\u0000${codePoint}\u0000${fontWeight}\u0000${fontStyle}`
+    if (ctx.glyphFallbackCache.has(cacheKey)) {
+        return ctx.glyphFallbackCache.get(cacheKey) ?? null
+    }
+
+    const findCovering = (keys: Array<FontKey | undefined>): FontKey | null => {
+        for (const key of keys) {
+            if (!key || key === primaryKey) {
+                continue
+            }
+            if (fontHasGlyph(ctx.byKey.get(key), codePoint)) {
+                return key
+            }
+        }
+        return null
+    }
+
+    let resolved: FontKey | null = null
+
+    // 1. Walk the computed font-family list like a browser would.
+    const familyList = parseFontFamilyList(fontFamily)
+    const weight = Number.parseFloat(fontWeight)
+    for (const family of familyList) {
+        const familyName = normalizeFamily(family)
+        if (!familyName || GENERIC_FAMILY_NAMES.has(familyName)) {
+            continue
+        }
+        const candidates = ctx.rules.filter(
+            face => normalizeFamily(face.family) === familyName
+        )
+        if (!candidates.length) {
+            continue
+        }
+        const ranked = rankCandidates(
+            candidates,
+            Number.isNaN(weight) ? 400 : weight,
+            fontStyle
+        ).map(face => ctx.keyByRule.get(face))
+        resolved = findCovering(ranked)
+        if (resolved) {
+            break
+        }
+    }
+
+    // 2. Bundled fallback buckets: own generic first, then the others, then
+    //    the universal last-resort bucket.
+    if (!resolved) {
+        const isMono = familyList.some(family => /mono/i.test(family))
+        const ownGeneric = isMono ? "monospace" : "serif"
+        const generics = ["serif", "monospace"].filter(g => g !== ownGeneric)
+        const bucketOrder = [ownGeneric, ...generics, "universal"]
+        const requestedCut = requestedCutFor(fontWeight, fontStyle)
+        outer: for (const generic of bucketOrder) {
+            const cuts = ctx.fallback.get(generic)
+            if (!cuts) {
+                continue
+            }
+            const cutOrder = [
+                requestedCut,
+                ...(FALLBACK_ORDER[generic] ?? []).filter(
+                    cut => cut !== requestedCut
+                )
+            ]
+            resolved = findCovering(cutOrder.map(cut => cuts[cut]))
+            if (resolved) {
+                break outer
+            }
+        }
+    }
+
+    // 3. Any other embedded font with coverage.
+    if (!resolved) {
+        resolved = findCovering([...ctx.byKey.keys()])
+    }
+
+    ctx.glyphFallbackCache.set(cacheKey, resolved)
+    return resolved
+}
+
+/**
+ * Split a run's text into segments per font so every character is drawn with
+ * a font that actually contains its glyph: the CSS-selected primary font
+ * wherever it covers the text, and a fallback font (see
+ * {@link resolveGlyphFallbackFontKey}) for the characters it lacks.
+ */
+export function buildWordSegments(
+    ctx: FontSelectionContext,
+    fontFamily: string,
+    fontWeight: string,
+    fontStyle: string,
+    primaryKey: FontKey,
+    text: string
+): WordSegment[] {
+    const segments: WordSegment[] = []
+    let currentKey: FontKey | null = null
+    let buffer: string[] = []
+    for (const char of text) {
+        const codePoint = char.codePointAt(0)!
+        let key = primaryKey
+        if (!FORMAT_CODE_POINTS.has(codePoint)) {
+            const primaryFont = ctx.byKey.get(primaryKey)
+            if (!fontHasGlyph(primaryFont, codePoint)) {
+                key =
+                    resolveGlyphFallbackFontKey(
+                        ctx,
+                        fontFamily,
+                        fontWeight,
+                        fontStyle,
+                        primaryKey,
+                        codePoint
+                    ) ?? primaryKey
+            }
+        }
+        if (currentKey === key || buffer.length === 0) {
+            currentKey = key
+            buffer.push(char)
+        } else {
+            segments.push({
+                text: buffer.join(""),
+                fontKey: currentKey as FontKey
+            })
+            currentKey = key
+            buffer = [char]
+        }
+    }
+    if (buffer.length > 0 && currentKey !== null) {
+        segments.push({text: buffer.join(""), fontKey: currentKey})
+    }
+    return segments
 }
 
 const MM_TO_PT = 2.83464567
@@ -687,10 +897,19 @@ async function emitPage(
     const markers = collectListMarkers(win, container, containerRect, fonts)
     words.push(...markers.words)
     for (const word of words) {
-        const font = fonts.byKey.get(word.fontKey)
-        if (!font) {
+        // Resolve each segment's embedded font; segments whose font could not
+        // be loaded are dropped.
+        const segments = word.segments
+            .map(seg => ({text: seg.text, font: fonts.byKey.get(seg.fontKey)}))
+            .filter(seg => seg.font !== undefined) as Array<{
+            text: string
+            font: LoadedFont
+        }>
+        if (segments.length === 0) {
             continue
         }
+        // Baseline geometry comes from the run's primary font.
+        const font = fonts.byKey.get(word.fontKey) ?? segments[0].font
         const sizePt = word.fontSizePx * PX_TO_PT
         // Baseline approximation: the range rect roughly spans ascent..descent
         // of the text, so the baseline sits `descent` above the rect bottom.
@@ -702,22 +921,32 @@ async function emitPage(
         if (word.smallCaps) {
             drawSmallCapsRun(
                 page,
-                word.text,
+                segments,
                 xPt,
                 baselineY,
                 sizePt,
                 word.width * PX_TO_PT,
-                font,
                 word.color
             )
         } else {
-            page.drawText(word.text, {
-                x: xPt,
-                y: baselineY,
-                size: sizePt,
-                font: font.pdfFont,
-                color: word.color
-            })
+            // Draw the segments sequentially; each segment advances by its
+            // own font's metrics. (The browser laid the text out with its own
+            // fallback metrics for missing glyphs — small per-word drift is
+            // possible, same accepted approximation as small caps.)
+            let cursorX = xPt
+            for (const segment of segments) {
+                page.drawText(segment.text, {
+                    x: cursorX,
+                    y: baselineY,
+                    size: sizePt,
+                    font: segment.font.pdfFont,
+                    color: word.color
+                })
+                cursorX += segment.font.pdfFont.widthOfTextAtSize(
+                    segment.text,
+                    sizePt
+                )
+            }
         }
         if (
             word.decoration.lineThrough ||
@@ -1192,21 +1421,28 @@ const SMALL_CAPS_SCALE = 0.8
 
 function drawSmallCapsRun(
     page: PDFPage,
-    text: string,
+    segments: Array<{text: string; font: LoadedFont}>,
     xPt: number,
     baselineY: number,
     sizePt: number,
     targetWidthPt: number,
-    font: LoadedFont,
     color: RGB
 ): void {
-    // Per-character (text, size) pieces at their natural sizes.
-    const pieces = Array.from(text, ch => {
-        const isLower = ch.toUpperCase() !== ch
-        const out = isLower ? ch.toUpperCase() : ch
-        const size = isLower ? sizePt * SMALL_CAPS_SCALE : sizePt
-        return {out, size, advance: font.pdfFont.widthOfTextAtSize(out, size)}
-    })
+    // Per-character (text, size, font) pieces at their natural sizes.
+    const pieces = []
+    for (const segment of segments) {
+        for (const char of Array.from(segment.text)) {
+            const isLower = char.toUpperCase() !== char
+            const out = isLower ? char.toUpperCase() : char
+            const size = isLower ? sizePt * SMALL_CAPS_SCALE : sizePt
+            pieces.push({
+                out,
+                size,
+                font: segment.font.pdfFont,
+                advance: segment.font.pdfFont.widthOfTextAtSize(out, size)
+            })
+        }
+    }
     const naturalWidth = pieces.reduce((sum, p) => sum + p.advance, 0)
     // Fit to the measured width (clamped so a bad measurement can't
     // produce absurd glyph sizes).
@@ -1220,7 +1456,7 @@ function drawSmallCapsRun(
             x: cursor,
             y: baselineY,
             size: piece.size * fit,
-            font: font.pdfFont,
+            font: piece.font,
             color
         })
         cursor += piece.advance * fit
@@ -1633,8 +1869,17 @@ function collectWords(
     return s
 }
         const pushRun = (runText: string, rect: DOMRect): void => {
+            const finalText = applyTransform(runText)
             words.push({
-                text: applyTransform(runText),
+                text: finalText,
+                segments: buildWordSegments(
+                    ctx,
+                    style.fontFamily,
+                    style.fontWeight,
+                    style.fontStyle,
+                    fontKey,
+                    finalText
+                ),
                 x: rect.left - containerRect.left,
                 yTop: rect.top - containerRect.top,
                 yBottom: rect.bottom - containerRect.top,
@@ -1788,8 +2033,7 @@ function collectListMarkers(
             markerStyleOrDefault.fontWeight,
             markerStyleOrDefault.fontStyle
         )
-        const font = ctx.byKey.get(fontKey)?.pdfFont
-        if (!font) {
+        if (!ctx.byKey.has(fontKey)) {
             continue
         }
         const color = parseCssColor(markerStyleOrDefault.color)?.rgb ?? rgb(0, 0, 0)
@@ -1853,15 +2097,33 @@ function collectListMarkers(
         if (!markerText) {
             continue
         }
+        const markerSegments = buildWordSegments(
+            ctx,
+            markerStyleOrDefault.fontFamily,
+            markerStyleOrDefault.fontWeight,
+            markerStyleOrDefault.fontStyle,
+            fontKey,
+            markerText
+        )
+        // Width = sum of each segment's advance in its own font (segments
+        // may use a fallback font when the marker glyph is missing from the
+        // primary one).
         const markerWidthPx =
-            (font.widthOfTextAtSize(markerText, fontSizePx * PX_TO_PT) /
-                PX_TO_PT
-            )
+            markerSegments.reduce(
+                (sum, seg) =>
+                    sum +
+                    (ctx.byKey.get(seg.fontKey)?.pdfFont.widthOfTextAtSize(
+                        seg.text,
+                        fontSizePx * PX_TO_PT
+                    ) ?? 0),
+                0
+            ) / PX_TO_PT
         const x = inside
             ? contentXInsidePx
             : boxLeftPx - markerWidthPx - gapPx
         result.words.push({
             text: markerText,
+            segments: markerSegments,
             x,
             yTop: yTopPx,
             // Approximate the first line's em box: font size plus a bit.

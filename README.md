@@ -82,8 +82,9 @@ DOM→PDF emitter (src/pdf-emitter.ts)
     + foliojs fontkit — then CSS font matching (family → style → weight
     band, vivliostyle `Fnt_n` aliases stripped) picks the right cut per text
     run. Identical fonts are embedded once (semantic dedup). Libertinus
-    Serif/Mono TTFs in public/fonts/ serve only as the last-resort fallback
-    and as the demo's active font.
+    Serif / JetBrains Mono TTFs in public/fonts/ serve only as the last-resort
+    fallback and as the demo's active font. Characters missing from a run's
+    font are re-drawn from another embedded font that covers them.
         │
         ▼
 Uint8Array → Blob → download as demo.pdf
@@ -118,7 +119,8 @@ src/demo-document.html      rich test document (paged CSS, TOC, footnotes,
                             cross references, external links, 3 tables,
                             3 figures, bibliography)
 src/vivliostyle-print.d.ts  types for the untyped @vivliostyle/print
-public/fonts/               Libertinus Serif + Libertinus Mono TTFs (OFL) plus
+public/fonts/               Libertinus Serif + JetBrains Mono TTFs (OFL) plus
+                            DejaVu Sans (universal per-glyph fallback) and
                             Noto Sans Arabic/Hebrew test fonts (OFL)
 public/woff2/               the WOFF2 decoder WASM (woff2.wasm, served by the
                             demo; also shipped in the npm package)
@@ -161,7 +163,7 @@ The demo document (`src/demo-document.html`) deliberately exercises:
 - inline styles: bold, italic, bold-italic, strikethrough
   (`text-decoration: line-through`, drawn as a vector line by the
   emitter), small caps (synthesized by the emitter), and monospace code
-  spans plus a `<pre>` block set in Libertinus Mono,
+  spans plus a `<pre>` block set in JetBrains Mono,
 - headings with CSS-counter numbering, nested lists, a blockquote, inline
   code and a dark `<pre>` block, and a bibliography,
 - a "Typography, Direction & Decoration" section exercising the added
@@ -251,7 +253,7 @@ Because the emitter writes the PDF itself, it can add structures that
   family/weight/style; weight ranges and italic/oblique matched per CSS Fonts
   4, vivliostyle `Fnt_n` aliases stripped). When nothing matches — or a
   configured font can't be embedded — text falls back to Libertinus Serif
-  (Regular/Bold/Italic/BoldItalic) or Libertinus Mono Regular. WOFF is
+  (Regular/Bold/Italic/BoldItalic) or JetBrains Mono (Regular/Bold). WOFF is
   unwrapped to sfnt in pure JS and embedded; WOFF2 is decoded to sfnt via
   fonteditor-core's WASM decoder (see below). If a fallback font file is
   missing/unfetchable it is skipped with a warning rather than failing the
@@ -259,6 +261,12 @@ Because the emitter writes the PDF itself, it can add structures that
   own `@font-face` fonts cover the text. To add a fallback family, drop the
   TTFs into `public/fonts/` and extend `FALLBACK_FONT_FILES` in
   `src/pdf-emitter.ts`.
+- **Per-glyph fallback**: characters missing from a run's chosen font (e.g.
+  math symbols absent from a monospace document font) are split off into
+  separate segments drawn with an embedded font that covers them: the other
+  families of the run's `font-family` list first, then the bundled fallbacks,
+  then any embedded font. Characters no available font covers render as
+  `.notdef` boxes, like today.
 
 ## WOFF2 support and the decoder WASM
 
@@ -328,8 +336,9 @@ served location.
   carry their own licenses — vivliostyle is AGPL-3.0; @pdfme/pdf-lib is
   MIT (like the pdf-lib it forks); fontkit is MIT; pdfjs-dist (dev/test
   only) is Apache-2.0.
-- Libertinus Serif + Libertinus Mono: SIL Open Font License 1.1
-  (`public/fonts/OFL.txt`).
+- Libertinus Serif + JetBrains Mono: SIL Open Font License 1.1
+  (`public/fonts/OFL.txt`; JetBrains Mono attribution in
+  `public/fonts/NOTICE-JetBrainsMono.txt`).
 - Noto Sans Arabic + Noto Sans Hebrew (demo/test RTL coverage): SIL Open Font
   License 1.1 (also covered by `public/fonts/OFL.txt`; attribution in
   `public/fonts/NOTICE-Noto.txt`).

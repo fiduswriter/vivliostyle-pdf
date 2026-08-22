@@ -6,6 +6,8 @@ declare module "fontkit" {
         unitsPerEm: number
         ascent: number
         descent: number
+        /** True when the font can render the given Unicode code point. */
+        hasGlyphForCodePoint(codePoint: number): boolean
     }
 
     export function create(buffer: Uint8Array): FontkitFont

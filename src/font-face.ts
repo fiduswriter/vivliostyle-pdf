@@ -179,8 +179,84 @@ export function collectFontFaceRules(
     return rules
 }
 
-const normalizeFamily = (family: string): string =>
+export const normalizeFamily = (family: string): string =>
     family.trim().toLowerCase().replace(/^["']|["']$/g, "")
+
+/** Generic CSS family keywords — never `@font-face` family names. */
+export const GENERIC_FAMILY_NAMES = new Set([
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui"
+])
+
+// Lower rank = better for the requested style.
+const styleRank = (face: FontFaceDescriptor, requestedStyle: string): number => {
+    const isItalic = requestedStyle === "italic"
+    const isOblique = requestedStyle === "oblique"
+    const s = face.style.trim().toLowerCase()
+    if (s === "italic") {
+        return isItalic ? 0 : isOblique ? 1 : 4
+    }
+    if (s.startsWith("oblique")) {
+        const angleMatch = s.match(/([\d.]+)/)
+        const angle = angleMatch ? Number(angleMatch[1]) : 0
+        if (isOblique) {
+            return angle === 0 ? 0 : 1
+        }
+        if (isItalic) {
+            return 3
+        }
+        return angle === 0 ? 1 : 2
+    }
+    // normal
+    if (!isItalic && !isOblique) {
+        return 0
+    }
+    return 4
+}
+
+const weightDistance = (
+    face: FontFaceDescriptor,
+    weight: number
+): number => {
+    if (weight >= face.weightLower && weight <= face.weightUpper) {
+        return 0
+    }
+    if (weight < face.weightLower) {
+        return face.weightLower - weight
+    }
+    return weight - face.weightUpper
+}
+
+/**
+ * Order a family's candidate rules best-first using simplified CSS Fonts
+ * Level 4 matching for weight/style: style-matched rules come before any rule
+ * that cannot render the requested style (rank 4); among equally ranked
+ * candidates the closest weight band wins, ties prefer the heavier band.
+ */
+export function rankCandidates(
+    candidates: FontFaceDescriptor[],
+    requestedWeight: number,
+    requestedStyle: string
+): FontFaceDescriptor[] {
+    const weight = Number.isFinite(requestedWeight) ? requestedWeight : 400
+    return [...candidates].sort((a, b) => {
+        const styleDiff =
+            styleRank(a, requestedStyle) - styleRank(b, requestedStyle)
+        if (styleDiff !== 0) {
+            return styleDiff
+        }
+        const weightDiff = weightDistance(a, weight) - weightDistance(b, weight)
+        if (weightDiff !== 0) {
+            return weightDiff
+        }
+        // Equal style rank and weight distance: prefer the heavier band.
+        return b.weightLower - a.weightLower
+    })
+}
 
 /**
  * CSS font matching (simplified CSS Fonts Level 4 for weight/style) over the
@@ -188,11 +264,7 @@ const normalizeFamily = (family: string): string =>
  *
  * - family names are tried in the computed `font-family` order; a family with
  *   no rule (or no style that can satisfy the request) is skipped;
- * - style is matched exactly first (italic/oblique/normal), with the
- *   spec-adjacent fallbacks;
- * - within the style-matched rules of a family, the weight band closest to
- *   the requested weight wins (exact in-band beats every distance; a tie
- *   prefers the heavier band).
+ * - within each family, candidates are ordered by {@link rankCandidates}.
  *
  * Returns the best `@font-face` descriptor, or null when nothing matches.
  */
@@ -202,47 +274,9 @@ export function selectFontFace(
     requestedWeight: number,
     requestedStyle: string
 ): FontFaceDescriptor | null {
-    const weight = Number.isFinite(requestedWeight) ? requestedWeight : 400
-    const isItalic = requestedStyle === "italic"
-    const isOblique = requestedStyle === "oblique"
-
-    // Lower rank = better for the requested style.
-    const styleRank = (face: FontFaceDescriptor): number => {
-        const s = face.style.trim().toLowerCase()
-        if (s === "italic") {
-            return isItalic ? 0 : isOblique ? 1 : 4
-        }
-        if (s.startsWith("oblique")) {
-            const angleMatch = s.match(/([\d.]+)/)
-            const angle = angleMatch ? Number(angleMatch[1]) : 0
-            if (isOblique) {
-                return angle === 0 ? 0 : 1
-            }
-            if (isItalic) {
-                return 3
-            }
-            return angle === 0 ? 1 : 2
-        }
-        // normal
-        if (!isItalic && !isOblique) {
-            return 0
-        }
-        return 4
-    }
-
-    const weightDistance = (face: FontFaceDescriptor): number => {
-        if (weight >= face.weightLower && weight <= face.weightUpper) {
-            return 0
-        }
-        if (weight < face.weightLower) {
-            return face.weightLower - weight
-        }
-        return weight - face.weightUpper
-    }
-
     for (const family of familyList) {
         const familyName = normalizeFamily(family)
-        if (!familyName || familyName === "serif" || familyName === "sans-serif" || familyName === "monospace" || familyName === "cursive" || familyName === "fantasy" || familyName === "system-ui") {
+        if (!familyName || GENERIC_FAMILY_NAMES.has(familyName)) {
             // Generic families are never @font-face families (they were the
             // fallback triggers in the browser); handled by the caller.
             continue
@@ -253,26 +287,11 @@ export function selectFontFace(
         if (!candidates.length) {
             continue
         }
-        candidates.sort((a, b) => styleRank(a) - styleRank(b))
-        const bestRank = styleRank(candidates[0])
-        if (bestRank === 4) {
+        const ranked = rankCandidates(candidates, requestedWeight, requestedStyle)
+        if (styleRank(ranked[0], requestedStyle) === 4) {
             continue // No rule in this family can render the requested style.
         }
-        const styleMatched = candidates.filter(face => styleRank(face) === bestRank)
-        let chosen = styleMatched[0]
-        let chosenDistance = weightDistance(chosen)
-        for (const face of styleMatched.slice(1)) {
-            const distance = weightDistance(face)
-            if (
-                distance < chosenDistance ||
-                (distance === chosenDistance &&
-                    face.weightLower > chosen.weightLower)
-            ) {
-                chosen = face
-                chosenDistance = distance
-            }
-        }
-        return chosen
+        return ranked[0]
     }
     return null
 }

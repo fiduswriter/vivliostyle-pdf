@@ -331,6 +331,11 @@ test("generates a valid multi-page PDF in the browser", async ({page}) => {
     expect(allText).toContain("DejaVu Sans")
     expect(allText).toContain("مرحبا بالعالم")
     expect(allText).toContain("التقرير")
+    // Math symbols inside monospace code spans: ≈ is covered natively by the
+    // bundled JetBrains Mono; ∝ is missing from it and must come from a
+    // per-glyph fallback font instead of a .notdef box.
+    expect(allText).toContain("≈")
+    expect(allText).toContain("∝")
     expect(flat.some(item => item.title.includes("Level five heading"))).toBe(
         true
     )

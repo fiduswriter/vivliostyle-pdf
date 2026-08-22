@@ -1,7 +1,11 @@
 import {expect, test} from "@playwright/test"
 import {readFile} from "node:fs/promises"
-import {inflateSync} from "node:zlib"
-import {PDFDocument, PDFName} from "@pdfme/pdf-lib"
+import {
+    decodePDFRawStream,
+    PDFArray,
+    PDFDocument,
+    PDFRawStream
+} from "@pdfme/pdf-lib"
 
 /**
  * Verification: when the Fidus Writer HTML exporter renders equations as SVG
@@ -78,18 +82,17 @@ test("math-svg: formulas are painted as vector ops, not lost", async ({
     let content = ""
     for (const page of pdf.getPages()) {
         const contents = page.node.Contents()
-        if (!contents) continue
-        for (let i = 0; i < contents.size(); i++) {
-            const stream = pdf.context.lookup(contents.get(i)) as {
-                dict: {get(name: PDFName): unknown}
-                getContents(): Uint8Array
-            }
-            let bytes = stream.getContents()
-            const filter = String(stream.dict.get(PDFName.of("Filter")))
-            if (filter.includes("FlateDecode")) {
-                bytes = inflateSync(bytes)
-            }
-            content += "\n" + new TextDecoder().decode(bytes)
+        const refs =
+            contents instanceof PDFArray ?
+                contents.asArray() :
+            contents ?
+                [contents] :
+                []
+        for (const ref of refs) {
+            const stream = pdf.context.lookup(ref)
+            if (!(stream instanceof PDFRawStream)) continue
+            content +=
+                "\n" + new TextDecoder().decode(decodePDFRawStream(stream).decode())
         }
     }
     // Fill/stroke ops must be present. The two formulas together contain ten

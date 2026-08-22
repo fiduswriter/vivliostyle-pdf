@@ -39,8 +39,13 @@
                 font-style: italic;
             }
             @font-face {
-                font-family: "Libertinus Mono";
-                src: url("__BASE__fonts/LibertinusMono-Regular.ttf");
+                font-family: "JetBrains Mono";
+                src: url("__BASE__fonts/JetBrainsMono-Regular.ttf");
+            }
+            @font-face {
+                font-family: "JetBrains Mono";
+                font-weight: bold;
+                src: url("__BASE__fonts/JetBrainsMono-Bold.ttf");
             }
             /* Additional families loaded purely through @font-face — the
                emitter discovers them from the paginated document (no hardcoded
@@ -158,13 +163,13 @@
                 padding-left: 8pt;
             }
             code {
-                font-family: "Libertinus Mono", monospace;
+                font-family: "JetBrains Mono", monospace;
                 font-size: 9.5pt;
                 background: #f0f0f0;
                 padding: 0 2pt;
             }
             pre {
-                font-family: "Libertinus Mono", monospace;
+                font-family: "JetBrains Mono", monospace;
                 font-size: 9pt;
                 line-height: 1.35;
                 background: #2d2d2d;
@@ -521,8 +526,10 @@
             Code spans such as <code>emitPdfFromVivliostyleWindow()</code> and
             the listing below use a real monospace font, while
             <strong><s>deleted emphasis</s></strong> shows that decorations
-            compose with weight. The section heading above and the abstract
-            label on the first page are set in small caps.
+            compose with weight. Symbols the monospace font lacks, e.g.
+            <code>x ∝ y</code> and <code>n ≈ m</code>, are drawn from a
+            fallback font via per-glyph fallback. The section heading above
+            and the abstract label on the first page are set in small caps.
         </p>
         <h3>Emitter sketch</h3>
         <p>

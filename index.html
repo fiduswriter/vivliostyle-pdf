@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Vivliostyle → PDF prototype</title>
+        <style>
+            body {
+                font-family: system-ui, sans-serif;
+                max-width: 46rem;
+                margin: 2rem auto;
+                padding: 0 1rem;
+                line-height: 1.5;
+                color: #222;
+            }
+            h1 {
+                font-size: 1.5rem;
+            }
+            button {
+                font-size: 1rem;
+                padding: 0.6rem 1.2rem;
+                border: 0;
+                border-radius: 6px;
+                background: #2456a6;
+                color: #fff;
+                cursor: pointer;
+            }
+            button:disabled {
+                opacity: 0.5;
+                cursor: wait;
+            }
+            #status {
+                margin-top: 1rem;
+                padding: 0.75rem 1rem;
+                background: #f4f4f4;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                min-height: 4rem;
+                max-height: 14rem;
+                overflow-y: auto;
+                font-family: ui-monospace, monospace;
+                font-size: 0.85rem;
+                white-space: pre-wrap;
+            }
+            #status:empty::before {
+                content: "Status messages will appear here.";
+                color: #999;
+            }
+            #status .error {
+                color: #b00020;
+                font-weight: 600;
+            }
+            .note {
+                background: #eef5ff;
+                border-left: 4px solid #2456a6;
+                padding: 0.5rem 1rem;
+            }
+            details.editor {
+                margin: 1rem 0;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                padding: 0.75rem 1rem;
+            }
+            details.editor summary {
+                cursor: pointer;
+                font-weight: 600;
+            }
+            details.editor textarea {
+                width: 100%;
+                box-sizing: border-box;
+                min-height: 18rem;
+                font-family: ui-monospace, monospace;
+                font-size: 0.85rem;
+                line-height: 1.4;
+                margin-top: 0.75rem;
+                padding: 0.5rem;
+            }
+            .options {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.75rem 1.5rem;
+                margin: 0.75rem 0 1rem;
+            }
+            .options label {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                cursor: pointer;
+            }
+            .options input[type="number"] {
+                width: 5ch;
+            }
+        </style>
+      <script type="module" crossorigin src="/vivliostyle-pdf/assets/index-DtY-Wvkb.js"></script>
+    </head>
+    <body>
+        <h1>Browser-only PDF export prototype</h1>
+        <p>
+            This page is a technical prototype for producing a real vector PDF
+            entirely in the browser, without the browser print dialog:
+        </p>
+        <ol>
+            <li>
+                <a href="https://vivliostyle.org/">vivliostyle</a> paginates an
+                HTML/CSS Paged Media document inside a hidden iframe.
+            </li>
+            <li>
+                A custom DOM→PDF emitter walks the paginated output (measured
+                text positions, fonts, images, backgrounds, borders, link
+                rects) and re-renders it with
+                <a href="https://github.com/pdfme/pdf-lib">@pdfme/pdf-lib</a>.
+            </li>
+            <li>The resulting PDF bytes are downloaded as a file.</li>
+        </ol>
+        <p class="note">
+            Everything runs client-side. No server is involved after the page
+            has loaded, and no print dialog is opened.
+        </p>
+        <p>
+            The demo document exercises: running headers, page-number
+            footers, footnotes, a table of contents with resolved page
+            numbers, cross references with auto-resolved page numbers,
+            tables (one spanning a page break), SVG and PNG figures,
+            inline styles (bold, italic, bold-italic, strikethrough, small
+            caps, monospace code), and hyperlinks. In the generated PDF,
+            links are clickable annotations: external links open their
+            URL, and TOC entries / cross references jump to the target
+            page. The PDF also carries things the print dialog cannot
+            produce: document metadata from the source's
+            <code>&lt;title&gt;</code>/<code>&lt;meta&gt;</code> tags, a
+            bookmarks sidebar (shown automatically), and the pre-pagination
+            HTML source embedded as a file attachment.
+        </p>
+        <details class="editor" open>
+            <summary>Edit source HTML/CSS</summary>
+            <textarea
+                id="source"
+                spellcheck="false"
+                aria-label="HTML/CSS source"
+            ></textarea>
+        </details>
+
+        <div class="options">
+            <label>
+                <input type="checkbox" id="crop-marks" />
+                Crop marks
+            </label>
+            <label>
+                <input type="checkbox" id="trim-box" checked />
+                Trim box
+            </label>
+            <label>
+                <input type="checkbox" id="bleed-box" />
+                Bleed box
+            </label>
+            <label>
+                Bleed
+                <input type="number" id="bleed-mm" value="3" min="0" step="1" />
+                mm
+            </label>
+            <label title="Draw a blue border around each Link annotation in the PDF">
+                <input type="checkbox" id="link-borders" />
+                Link annotation borders
+            </label>
+            <label title="Rasterize SVG images at 2x instead of keeping them as vector PDF">
+                <input type="checkbox" id="rasterize-svgs" />
+                Rasterize SVGs
+            </label>
+        </div>
+
+        <p>
+            <button id="generate" type="button">Generate PDF</button>
+        </p>
+        <div id="status" role="log" aria-live="polite"></div>
+    </body>
+</html>

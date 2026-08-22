@@ -1,0 +1,21 @@
+Noto Sans Arabic and Noto Sans Hebrew (SIL Open Font License 1.1)
+===============================================================
+
+These fonts are bundled (in public/fonts/) to give right-to-left (Arabic /
+Hebrew) glyph coverage to the demo document and the end-to-end tests, and for
+any Hebrew/Arabic document that references them via `@font-face`.
+
+They are used by:
+- the demo document (`src/demo-document.html`, the "Typography, Direction &
+  Decoration" section, families "Noto Sans Arabic" / "Noto Sans Hebrew"); and
+- `test/rtl.spec.ts` (RTL output verification).
+
+- Noto Sans Arabic-Regular.ttf — Copyright 2015-2020 Google LLC. All Rights
+  Reserved. Licensed under the SIL Open Font License, Version 1.1.
+- Noto Sans Hebrew-Regular.ttf — Copyright 2019 Google Inc. All Rights
+  Reserved. Licensed under the SIL Open Font License, Version 1.1.
+
+Bundled from the Debian `fonts-noto-core` package
+(https://packages.debian.org/fonts-noto-core). The full OFL text is available
+at https://openfontlicense.org (a copy also lives alongside these files as
+`OFL.txt` for the OFL-licensed fonts).

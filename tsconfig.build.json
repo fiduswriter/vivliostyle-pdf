@@ -10,12 +10,6 @@
     },
     "include": [
         "src/index.ts",
-        "src/pdf-emitter.ts",
-        "src/font-face.ts",
-        "src/font-formats.ts",
-        "src/bidi.ts",
-        "src/pdf-lib-ops.ts",
-        "src/fontkit.d.ts",
-        "src/vivliostyle-print.d.ts"
+        "src/backend.ts"
     ]
 }

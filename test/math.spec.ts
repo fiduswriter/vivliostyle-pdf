@@ -11,13 +11,16 @@ import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs"
  * and `figure_equation` nodes as
  *   <div class="figure-equation"><math display="block">…</math></div>
  * (via mathlive convertLatexToMathMl). Chromium lays this MathML out
- * natively. This spec paginates the same markup with the app's real
- * pipeline and inspects what actually made it into the PDF:
+ * natively. The emitter converts each `<math>` element to SVG via MathJax
+ * (MathML input, SVG output — see src/math-svg.ts) and paints the formula
+ * as vector paths at the measured rect. This spec paginates the same markup
+ * with the app's real pipeline and inspects what actually made it into the
+ * PDF:
  *
- *  - are the math tokens (numbers, variables) drawn as text?
- *  - are the *painted* math structures (fraction bars, radicals,
- *    stretchy delimiters, table rules) present as vector drawing ops,
- *    or did the emitter only copy the text tokens?
+ *  - is the formula painted as vector drawing ops (fraction bar, radical,
+ *    stretchy delimiters — everything the browser drew but the old token
+ *    copy lost)?
+ *  - is the math text NOT double-rendered as overlapping token text?
  */
 const MATH_HTML = `<!doctype html>
 <html lang="en-US">
@@ -37,24 +40,17 @@ div.figure-equation { text-align: center; margin: 1em 0; }
 </body>
 </html>`
 
-/** Operator names that paint visible marks (fill/stroke of paths/rects). */
+/** pdfjs operator names that paint visible marks (paths, fills, strokes). */
 const PAINT_OPS = new Set([
-    "re",
-    "f",
-    "F",
-    "f*",
-    "S",
-    "s",
-    "B",
-    "B*",
-    "b",
-    "b*",
-    "n"
+    "constructPath",
+    "fill",
+    "eoFill",
+    "stroke",
+    "fillStroke",
+    "paintImageXObject"
 ])
 
-test("math: emitter copies tokens but loses painted MathML structure", async ({
-    page
-}) => {
+test("math: emitter paints formulas as vector SVG paths", async ({page}) => {
     const consoleErrors: string[] = []
     page.on("console", msg => {
         if (msg.type() === "error") consoleErrors.push(msg.text())
@@ -83,9 +79,7 @@ test("math: emitter copies tokens but loses painted MathML structure", async ({
         if (typeof code === "number") OPS_BY_CODE.set(code, name)
     }
     const pages: string[] = []
-    const paintOpNames = new Set<string>()
-    const allOpNames = new Set<string>()
-    const fractionPositions: {x: number; y: number}[] = []
+    const paintOpCount = {total: 0}
     let totalTextOps = 0
     for (let i = 1; i <= doc.numPages; i++) {
         const pd = await doc.getPage(i)
@@ -96,46 +90,28 @@ test("math: emitter copies tokens but loses painted MathML structure", async ({
                 .join(" ")
                 .replace(/\s+/g, " ")
         )
-        for (const item of content.items as Array<{
-            str?: string
-            transform?: number[]
-        }>) {
-            if (item.str === "123" || item.str === "456") {
-                fractionPositions.push({
-                    x: item.transform?.[4] ?? 0,
-                    y: (item.transform?.[5] ?? 0)
-                })
-            }
-        }
         const ops = await pd.getOperatorList()
         for (const code of ops.fnArray) {
             const name = OPS_BY_CODE.get(code) ?? `op${code}`
-            allOpNames.add(name)
-            if (PAINT_OPS.has(name)) {
-                paintOpNames.add(name)
-            }
+            if (PAINT_OPS.has(name)) paintOpCount.total++
             if (name === "showText") totalTextOps++
         }
     }
     const allText = pages.join(" ")
 
-    // 1. The math tokens DID make it into the PDF as text.
-    expect(allText).toContain("123")
-    expect(allText).toContain("456")
-    expect(allText).toContain("z")
-
-    // 2. Numerator/denominator are stacked (different baselines, same x).
-    expect(fractionPositions.length).toBe(2)
-    const [num, den] = fractionPositions
-    expect(Math.abs(num.x - den.x)).toBeLessThan(5)
-    expect(Math.abs(num.y - den.y)).toBeGreaterThan(4)
-
-    // 3. The PAINTED math structures (fraction bar, radical, stretchy
-    //    parentheses, table rules) are NOT in the PDF: the emitter only
-    //    draws word text runs, never math rules/glyph strokes. So the
-    //    content streams of this math-only document contain no paint ops.
-    console.log("paint ops found in PDF:", [...paintOpNames])
+    // 1. The formulas are painted as vector paths: the fraction bar,
+    //    radical, stretchy parentheses and table rules that MathJax draws
+    //    (and the old token copy lost) are present as paint ops. A math-only
+    //    document needs a substantial number of them.
+    console.log("paint ops found in PDF:", paintOpCount.total)
     console.log("text ops:", totalTextOps)
-    console.log("all ops:", [...allOpNames].sort().join(", "))
-    expect(paintOpNames.size).toBe(0)
+    expect(paintOpCount.total).toBeGreaterThan(20)
+
+    // 2. The math tokens are NOT copied as overlapping text anymore — the
+    //    only text on the pages is the surrounding prose ("Inline:",
+    //    "continues here.").
+    expect(allText).toContain("Inline:")
+    expect(allText).toContain("continues here.")
+    expect(allText).not.toContain("123")
+    expect(allText).not.toContain("456")
 })

@@ -4,7 +4,7 @@
  * download the result. Everything happens client-side.
  */
 import {printHTML} from "@vivliostyle/print"
-import {emitPdfFromVivliostyleWindow} from "./pdf-emitter.js"
+import {emitPdfFromVivliostyleWindow} from "./index.js"
 import demoHtml from "./demo-document.html?raw"
 
 // Static index.html elements; assert non-null.

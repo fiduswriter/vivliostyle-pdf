@@ -49,13 +49,11 @@
         "prepublishOnly": "pnpm run build"
     },
     "dependencies": {
-        "@pdfme/pdf-lib": "^6.1.12",
-        "@vivliostyle/print": "^2.44.1",
-        "fonteditor-core": "^2.6.3",
-        "fontkit": "^2.0.4",
-        "svg4pdf-lib": "^0.1.2"
+        "@vivliostyle/print": "^2.45.0",
+        "pages-to-pdf": "^0.3.4"
     },
     "devDependencies": {
+        "@pdfme/pdf-lib": "^6.1.12",
         "@playwright/test": "^1.49.0",
         "@types/node": "^26.2.0",
         "pdfjs-dist": "^6.2.108",

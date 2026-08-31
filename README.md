@@ -106,42 +106,6 @@ Implementation notes:
 - Baselines are approximated as `rect.bottom − descent(fontSize)` using
   fontkit metrics — see Limitations.
 
-## Repository layout
-
-```
-index.html                  demo page (vite entry)
-src/main.ts                 wiring: paginate → emit → download
-src/pdf-emitter.ts          the DOM→PDF emitter (public API:
-                            emitPdfFromVivliostyleWindow(win))
-src/font-face.ts            @font-face discovery + CSS font matching
-src/font-formats.ts         font format sniffing + WOFF→sfnt normalization
-src/demo-document.html      rich test document (paged CSS, TOC, footnotes,
-                            cross references, external links, 3 tables,
-                            3 figures, bibliography)
-src/vivliostyle-print.d.ts  types for the untyped @vivliostyle/print
-public/fonts/               Libertinus Serif + JetBrains Mono TTFs (OFL) plus
-                            DejaVu Sans (universal per-glyph fallback) and
-                            Noto Sans Arabic/Hebrew test fonts (OFL)
-public/woff2/               the WOFF2 decoder WASM (woff2.wasm, served by the
-                            demo; also shipped in the npm package)
-public/images/              figure SVGs + generated PNG
-scripts/gen-assets.mjs      dependency-free PNG generator (node zlib)
-scripts/debug-run.mjs       dev helper: run generation, log console, save PDF
-test/e2e.spec.ts            Playwright end-to-end test
-test/math.spec.ts           MathML translation verification (known gap)
-test/math-svg.spec.ts       SVG-based math renders as vector paint ops
-test/fonts.spec.ts          dynamic font resolution e2e (matching, WOFF, dedup)
-test/font-formats.spec.ts   node tests for font sniffing + WOFF round-trip
-test/bidi.spec.ts           node tests for the bidi-run splitter
-test/rtl.spec.ts            RTL/bidi end-to-end (positions, mixed runs)
-test/decor.spec.ts          text-decoration + border-style breadth vector ops
-test/markers.spec.ts        list-marker fidelity (inside/outside, ::marker)
-test/list-style-image.spec.ts list-style-image markers + Chromium probe
-test/outline.spec.ts        outline h1–h6 nesting
-test/adapt-template.spec.ts fidus -adapt-template footnote verification
-.github/workflows/pages.yml GitHub Pages deployment
-```
-
 ## Demo document coverage
 
 The demo document (`src/demo-document.html`) deliberately exercises:

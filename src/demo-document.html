@@ -395,6 +395,15 @@
             .chip-blue {
                 background: #dbe7ff;
             }
+
+            /* ---- MathML formulas ---- */
+            .equation {
+                display: inline-block;
+            }
+            .figure-equation {
+                text-align: center;
+                margin: 10pt 0;
+            }
         </style>
     </head>
     <body>
@@ -760,6 +769,35 @@
             radius.
         </p>
 
+        <h3>MathML formulas</h3>
+        <p>
+            Inline MathML is handled by the pipeline, such as the
+            mass–energy equivalence
+            <span class="equation"><math display="inline"><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math></span>,
+            rendered as vector paths rather than copied text tokens.
+        </p>
+        <div class="figure-equation">
+            <math display="block">
+                <mrow>
+                    <mi>x</mi>
+                    <mo>=</mo>
+                    <mfrac>
+                        <mrow>
+                            <mo>-</mo><mi>b</mi><mo>±</mo>
+                            <msqrt>
+                                <mrow>
+                                    <msup><mi>b</mi><mn>2</mn></msup>
+                                    <mo>-</mo>
+                                    <mn>4</mn><mi>a</mi><mi>c</mi>
+                                </mrow>
+                            </msqrt>
+                        </mrow>
+                        <mrow><mn>2</mn><mi>a</mi></mrow>
+                    </mfrac>
+                </mrow>
+            </math>
+        </div>
+
         <h2 id="sec-discussion">Discussion</h2>
         <p>
             As the feature matrix in <a class="xref" href="#tab-2">Table 2</a>
@@ -774,13 +812,10 @@
             yet to bordered outlines. List markers are synthesized
             approximations, small caps are drawn as scaled uppercase glyphs
             rather than real <code>smcp</code> substitutions, and hyphens
-            inserted by browser hyphenation would not be reproduced. Math is
-            not translated faithfully from native MathML (its fraction bars,
-            radicals and stretchy delimiters are painted by the engine rather
-            than emitted as tokens), so formulas are best produced as SVG
-            images — the Fidus Writer exporter emits MathJax SVG `<img>`s for
-            this — which the emitter then draws as vector ops. Tagged PDF and
-            PDF/A output remain out of scope.
+            inserted by browser hyphenation would not be reproduced. MathML is
+            converted to SVGs internally which then are translated into
+            PDF-internal vector paint ops. For PDF/UA-2 output, the original 
+            MathML is preserved as-is in the output.
         </p>
         <p>
             None of these limitations is fundamental. Baselines can be taken

@@ -3,8 +3,7 @@
  * iframe, then run the DOM-to-PDF emitter on the paginated output and
  * download the result. Everything happens client-side.
  */
-import {printHTML} from "@vivliostyle/print"
-import {emitPdfFromVivliostyleWindow} from "./index.js"
+import {emitPdfFromVivliostyleWindow, printHTML} from "./index.js"
 import demoHtml from "./demo-document.html?raw"
 
 // Static index.html elements; assert non-null.
@@ -22,6 +21,8 @@ const linkBordersCheckbox =
     document.querySelector<HTMLInputElement>("#link-borders")!
 const rasterizeSvgsCheckbox =
     document.querySelector<HTMLInputElement>("#rasterize-svgs")!
+const pdfACheckbox = document.querySelector<HTMLInputElement>("#pdf-a")!
+const pdfUaCheckbox = document.querySelector<HTMLInputElement>("#pdf-ua")!
 
 // Seed the editor with the demo source.
 sourceArea.value = demoHtml
@@ -73,6 +74,20 @@ function generate(): void {
         rasterizeSvgs: rasterizeSvgsCheckbox.checked
     }
 
+    function getPdfOptions() {
+        const pdfA = pdfACheckbox.checked
+        const pdfUa = pdfUaCheckbox.checked
+        if (!pdfA && !pdfUa) {
+            return undefined
+        }
+        return {
+            pdfOptions: {
+                pdfA: pdfA ? ("4" as const) : undefined,
+                pdfUa: pdfUa ? (2 as const) : undefined
+            }
+        }
+    }
+
     printHTML(html, {
         title: "Vivliostyle PDF Prototype Demo",
         hideIframe: true,
@@ -118,6 +133,7 @@ function generate(): void {
                                 language:
                                     sourceDoc.documentElement.lang || "en-US"
                             },
+                            ...getPdfOptions(),
                             printOptions
                         }
                     )

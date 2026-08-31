@@ -10,6 +10,7 @@
     },
     "include": [
         "src/index.ts",
-        "src/backend.ts"
+        "src/backend.ts",
+        "src/vivliostyle-print.d.ts"
     ]
 }

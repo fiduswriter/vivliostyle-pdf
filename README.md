@@ -13,8 +13,10 @@ npm install vivliostyle-pdf @pdfme/pdf-lib
 
 ```ts
 import {PDFDocument} from "@pdfme/pdf-lib"
-import {emitPdfFromVivliostyleWindow} from "vivliostyle-pdf"
-import {printHTML} from "@vivliostyle/print"
+import {
+    emitPdfFromVivliostyleWindow,
+    printHTML
+} from "vivliostyle-pdf"
 
 printHTML(html, {
     removeIframe: false,
@@ -25,7 +27,9 @@ printHTML(html, {
                 message => console.log(message),
                 {
                     sourceHtml: html,
-                    metadata: {title: "My document"}
+                    metadata: {title: "My document"},
+                    // Optional: claim PDF/A-4 and/or PDF/UA-2 conformance.
+                    // pdfOptions: {pdfA: "4", pdfUa: 2}
                 }
             )
             // e.g. download or upload the bytes
@@ -273,7 +277,9 @@ served location.
 - **Marker image sizing**: `list-style-image` markers are embedded at their
   natural size; if a browser scales them (e.g. `::marker` with a sized image)
   the PDF uses the intrinsic size instead.
-- **No tagged PDF structure** (accessibility).
+- **PDF/UA-2 tagging and PDF/A-4 conformance are optional**: pass
+  `pdfOptions: {pdfUa: 2}` and/or `pdfOptions: {pdfA: "4"}` (or `"4f"` when
+  files are embedded). They are not applied by default.
 
 ## Next steps
 
@@ -282,10 +288,9 @@ served location.
   regress sized runs (see FEATURES.md §9).
 - Border-radius on bordered outlines (backgrounds are rounded already);
   groove/ridge/inset/outset border styles; box-shadow/text-shadow/outline.
-- Math: native MathML is still only token-copied (see test/math.spec.ts), so
-  producers should render formulas as SVG `<img>`s — the Fidus Writer HTML
-  exporter does this (`mathOutput: "svg"`, MathJax tex2svg) and the emitter
-  draws them as vector ops (see test/math-svg.spec.ts).
+- Math: native MathML is converted to SVG through MathJax and drawn as vector
+  ops (see test/math.spec.ts). Producers can still use pre-rendered SVG
+  `<img>`s if they prefer (see test/math-svg.spec.ts).
 - Per-codepoint glyph fallback (Latin/CJK inside a script font whose cut lacks
   them), TrueType collections (.ttc), `unicode-range`,
   `size-adjust`/descent-override descriptors, OpenType feature control.

@@ -50,16 +50,15 @@ export type EmitOptions = Omit<PagesEmitOptions, "backend">
  * previous standalone implementation.
  *
  * @param win  the iframe window passed to printCallback
- * @param onProgress  optional status callback for UI feedback
- * @param options  optional extras (HTML source attachment, metadata, print options)
+ * @param options  optional extras (onProgress callback, HTML source
+ *   attachment, metadata, print options)
  * @returns the PDF file bytes
  */
 export async function emitPdfFromVivliostyleWindow(
     win: Window,
-    onProgress?: (message: string) => void,
     options?: EmitOptions
 ): Promise<Uint8Array> {
-    return emitPdfFromWindow(win, onProgress, {
+    return emitPdfFromWindow(win, {
         ...options,
         backend: VIVLIOSTYLE_BACKEND
     })

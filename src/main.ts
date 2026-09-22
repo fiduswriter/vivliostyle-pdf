@@ -116,8 +116,8 @@ function generate(): void {
                             ?.getAttribute("content") ?? undefined
                     const bytes = await emitPdfFromVivliostyleWindow(
                         iframeWindow,
-                        setStatus,
                         {
+                            onProgress: setStatus,
                             sourceHtml: sourceArea.value,
                             // Embed the source under the same name as the
                             // downloaded PDF, with an .html ending.

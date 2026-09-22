@@ -50,7 +50,7 @@
     },
     "dependencies": {
         "@vivliostyle/print": "^2.45.1",
-        "pages-to-pdf": "^0.3.4"
+        "pages-to-pdf": "^0.3.10"
     },
     "devDependencies": {
         "@pdfme/pdf-lib": "^6.1.12",

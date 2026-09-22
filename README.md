@@ -24,8 +24,8 @@ printHTML(html, {
         void (async () => {
             const bytes = await emitPdfFromVivliostyleWindow(
                 iframeWindow,
-                message => console.log(message),
                 {
+                    onProgress: message => console.log(message),
                     sourceHtml: html,
                     metadata: {title: "My document"},
                     // Optional: claim PDF/A-4 and/or PDF/UA-2 conformance.

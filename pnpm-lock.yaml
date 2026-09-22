@@ -12,8 +12,8 @@ importers:
         specifier: ^2.45.1
         version: 2.45.1
       pages-to-pdf:
-        specifier: ^0.3.4
-        version: 0.3.4
+        specifier: ^0.3.10
+        version: 0.3.10
     devDependencies:
       '@pdfme/pdf-lib':
         specifier: ^6.1.12
@@ -563,8 +563,8 @@ packages:
   package-json-from-dist@1.0.1:
     resolution: {integrity: sha512-UEZIS3/by4OC8vL3P2dTXRETpebLI2NiI5vIrjaD/5UtrkFX/tNbwjTSRAGC/+7CAo2pIcBaRgWmcBBHcsaCIw==}
 
-  pages-to-pdf@0.3.4:
-    resolution: {integrity: sha512-RgnMrg6NKhwqolTfMtgBqMW7RCqzl9QhLtaM8MeJsolj8VnQoJC1n5lEGGIeBGylCbyH2CpjBOll2eLCqsFP6g==}
+  pages-to-pdf@0.3.10:
+    resolution: {integrity: sha512-k/WF0d7AyOWHM5v8V6qWEjYmWdZbe9sL6TYoWoGlTz7wVEje6nMaGV1qKzu2+wTYfjNugTtIdCyXAnF/nt85Vw==}
 
   pako@0.2.9:
     resolution: {integrity: sha512-NUcwaKxUxWrZLpDG+z/xZaCgQITkA/Dv4V/T6bw7VON6l1Xz/VnrBqrYjZQ12TamKHzITTfOEIYUj48y2KXImA==}
@@ -1071,7 +1071,7 @@ snapshots:
 
   package-json-from-dist@1.0.1: {}
 
-  pages-to-pdf@0.3.4:
+  pages-to-pdf@0.3.10:
     dependencies:
       '@mathjax/src': 4.1.3
       '@pdfme/pdf-lib': 6.1.12

@@ -7,6 +7,13 @@
  */
 export {printHTML} from "@vivliostyle/print"
 export type {PrintHTMLConfig} from "@vivliostyle/print"
+export {VIVLIOSTYLE_BACKEND} from "./backend.js"
+export {vivliostylePdfEngine} from "./engine.js"
+export type {
+    PaginateConfig,
+    PaginatedWindow,
+    PrintEngine
+} from "./engine.js"
 
 import {
     emitPdfFromWindow,

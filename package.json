@@ -49,7 +49,7 @@
         "prepublishOnly": "pnpm run build"
     },
     "dependencies": {
-        "@vivliostyle/print": "^2.45.0",
+        "@vivliostyle/print": "^2.45.1",
         "pages-to-pdf": "^0.3.4"
     },
     "devDependencies": {

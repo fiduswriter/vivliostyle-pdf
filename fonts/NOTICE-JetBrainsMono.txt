@@ -1,0 +1,21 @@
+JetBrains Mono (SIL Open Font License 1.1)
+===========================================
+
+JetBrainsMono-Regular.ttf and JetBrainsMono-Bold.ttf are bundled
+(in public/fonts/) as the monospace fallback family: the last-resort font for
+monospace text runs whose `@font-face` fonts cannot be embedded, and — via the
+emitter's per-glyph fallback — a source of glyphs missing from a run's primary
+font (math symbols, arrows, etc.).
+
+They are used by:
+- `src/pdf-emitter.ts` (`FALLBACK_FONT_FILES.monospace`); and
+- the demo document / end-to-end tests that rely on monospace fallback.
+
+- JetBrains Mono Regular & Bold — Copyright 2020 The JetBrains Mono Project
+  Authors (https://github.com/JetBrains/JetBrainsMono). Licensed under the SIL
+  Open Font License, Version 1.1.
+
+Bundled from the official JetBrains Mono 2.304 release
+(https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304). The full
+OFL text is available at https://openfontlicense.org (a copy also lives
+alongside these files as `OFL.txt` for the OFL-licensed fonts).
